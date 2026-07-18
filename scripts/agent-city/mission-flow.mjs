@@ -517,123 +517,133 @@ async function main() {
   }
 
 
-  // 4b. Provider-side stake. The agreement "provider" signer is the WINNING
-  // TEAM LEADER (not the quote creator): eip712-payload returns
-  // NOT_MISSION_PARTICIPANT for anyone else, and signing-payload 500s until a
-  // winner exists. The leader stakes lock_bps (20%) of the mission amount.
-  const leaderRec = state.team0;
-  if (!state.providerStake) {
-    const dep = await http("GET", `/api/staking/${leaderRec.chainAgentId}/required-deposit?mission_amount=${QUOTE_PRICE}`, { token: leaderRec.token });
-    log("provider required-deposit", dep.json);
-    const needed = Number(dep.json.additional_needed ?? 0);
-    if (needed > 0) {
-      const stakeRes = await http("POST", `/api/staking/${leaderRec.chainAgentId}/stake`, { token: leaderRec.token, body: { amount: needed } });
-      const intent = stakeRes.json.intent;
-      if (!intent) throw new Error(`no stake intent in response: ${JSON.stringify(stakeRes.json).slice(0, 300)}`);
-      const value = BigInt(intent.value);
-      const gasPrice = BigInt(intent.suggestedGasPriceWei || "300000000000");
-      const wallet = new ethers.Wallet(leaderRec.privateKey, provider587);
+  // Agreement + escrow payment depend on the backend chain-service, which can
+  // be down (circuit breaker open) independently of the rest of the flow. Run
+  // this phase best-effort so finalization and collaboration still proceed.
+  try {
+    // 4b. Provider-side stake. The agreement "provider" signer is the WINNING
+    // TEAM LEADER (not the quote creator): eip712-payload returns
+    // NOT_MISSION_PARTICIPANT for anyone else, and signing-payload 500s until a
+    // winner exists. The leader stakes lock_bps (20%) of the mission amount.
+    const leaderRec = state.team0;
+    if (!state.providerStake) {
+      const dep = await http("GET", `/api/staking/${leaderRec.chainAgentId}/required-deposit?mission_amount=${QUOTE_PRICE}`, { token: leaderRec.token });
+      log("provider required-deposit", dep.json);
+      const needed = Number(dep.json.additional_needed ?? 0);
+      if (needed > 0) {
+        const stakeRes = await http("POST", `/api/staking/${leaderRec.chainAgentId}/stake`, { token: leaderRec.token, body: { amount: needed } });
+        const intent = stakeRes.json.intent;
+        if (!intent) throw new Error(`no stake intent in response: ${JSON.stringify(stakeRes.json).slice(0, 300)}`);
+        const value = BigInt(intent.value);
+        const gasPrice = BigInt(intent.suggestedGasPriceWei || "300000000000");
+        const wallet = new ethers.Wallet(leaderRec.privateKey, provider587);
+        let gasLimit;
+        try {
+          gasLimit = ((await provider587.estimateGas({ from: providerAgent.address, to: intent.to, data: intent.data, value })) * 130n) / 100n;
+        } catch {
+          gasLimit = 500000n;
+        }
+        await fundNative(leaderRec.address, value + gasPrice * gasLimit + ethers.parseEther("0.01"), "team0-leader");
+        const sent = await wallet.sendTransaction({ to: intent.to, data: intent.data, value, gasPrice, gasLimit, type: 0, chainId: CHAIN_ID });
+        log(`provider stake tx sent: ${sent.hash}`);
+        const receipt = await sent.wait();
+        if (receipt.status !== 1) throw new Error(`stake tx reverted: ${sent.hash}`);
+        const confirm = await http("POST", `/api/staking/${leaderRec.chainAgentId}/stake/confirm`, { token: leaderRec.token, body: { tx_hash: sent.hash } });
+        log("provider stake confirmed", confirm.json);
+      }
+      state.providerStake = { done: true, needed };
+      save();
+    }
+
+    // 5. Sign agreement (owner + provider); native chains have no USDC auth step.
+    state.agreements = state.agreements || {};
+    for (const [role, rec] of [["owner", owner], ["provider", leaderRec]]) {
+      if (state.agreements[role]) continue;
+      const wallet = new ethers.Wallet(rec.privateKey);
+      // The payload builder sits behind a chain-service circuit breaker that can
+      // stay open for minutes; poll through 500/503 until it recovers.
+      let payload;
+      for (let i = 0; i < 10; i++) {
+        try {
+          payload = await http("GET", `/api/missions/${missionId}/quotes/${quoteId}/signing-payload`, { token: rec.token, retries: 0 });
+          break;
+        } catch (err) {
+          if (!/HTTP (500|503)/.test(err.message)) throw err;
+          log(`${role} signing-payload not ready (attempt ${i + 1}): ${err.message.slice(0, 120)}`);
+          await sleep(30000);
+        }
+      }
+      if (!payload) throw new Error(`${role}: signing-payload never became available`);
+      const signature = await signTypedFlexible(wallet, payload.json);
+      const res = await http("POST", `/api/missions/${missionId}/quotes/${quoteId}/sign`, { token: rec.token, body: { signature } });
+      state.agreements[role] = res.json;
+      save();
+      log(`agreement signed by ${role}`);
+    }
+
+    // 4. Native escrow payment via signing-batch (surfaces after both signatures).
+    if (!state.nativePaymentTxHash) {
+      let item = null;
+      for (let i = 0; i < 20 && !item; i++) {
+        const batch = await http("GET", `/api/missions/${missionId}/signing-batch`, { token: owner.token });
+        state.signingBatch = batch.json;
+        save();
+        const pend = batch.json.pending_signatures || batch.json.pending || [];
+        item = pend.find((p) => p.purpose === "native_payment") || null;
+        if (!item) {
+          log(`signing-batch: native_payment not pending yet (pending=${pend.map((p) => p.purpose).join(",") || "none"})`);
+          await sleep(5000);
+        }
+      }
+      if (!item) throw new Error("native_payment never appeared in signing-batch");
+
+      const tx = item.tx;
+      if (Number(tx.chainId) !== CHAIN_ID) throw new Error(`native_payment tx chainId ${tx.chainId} != ${CHAIN_ID}`);
+      const wallet = new ethers.Wallet(owner.privateKey, provider587);
+      const value = BigInt(tx.value);
+      const gasPrice = BigInt(tx.gasPriceWei || tx.gasPrice || "300000000000");
       let gasLimit;
       try {
-        gasLimit = ((await provider587.estimateGas({ from: providerAgent.address, to: intent.to, data: intent.data, value })) * 130n) / 100n;
+        gasLimit = ((await provider587.estimateGas({ from: owner.address, to: tx.to, data: tx.data, value })) * 130n) / 100n;
       } catch {
-        gasLimit = 500000n;
+        gasLimit = 2000000n;
       }
-      await fundNative(leaderRec.address, value + gasPrice * gasLimit + ethers.parseEther("0.01"), "team0-leader");
-      const sent = await wallet.sendTransaction({ to: intent.to, data: intent.data, value, gasPrice, gasLimit, type: 0, chainId: CHAIN_ID });
-      log(`provider stake tx sent: ${sent.hash}`);
+      const need = value + gasPrice * gasLimit;
+      const have = await provider587.getBalance(owner.address);
+      log(`native payment: value=${ethers.formatEther(value)} gasLimit=${gasLimit} need=${ethers.formatEther(need)} have=${ethers.formatEther(have)}`);
+      if (have < need) {
+        await fundNative(owner.address, need + ethers.parseEther("0.05"), "owner");
+      }
+      const sent = await wallet.sendTransaction({ to: tx.to, data: tx.data, value, gasPrice, gasLimit, type: 0, chainId: CHAIN_ID });
+      log(`native payment tx sent: ${sent.hash}`);
       const receipt = await sent.wait();
-      if (receipt.status !== 1) throw new Error(`stake tx reverted: ${sent.hash}`);
-      const confirm = await http("POST", `/api/staking/${leaderRec.chainAgentId}/stake/confirm`, { token: leaderRec.token, body: { tx_hash: sent.hash } });
-      log("provider stake confirmed", confirm.json);
-    }
-    state.providerStake = { done: true, needed };
-    save();
-  }
+      if (receipt.status !== 1) throw new Error(`native payment tx reverted: ${sent.hash}`);
+      log(`native payment confirmed in block ${receipt.blockNumber}`);
 
-  // 5. Sign agreement (owner + provider); native chains have no USDC auth step.
-  state.agreements = state.agreements || {};
-  for (const [role, rec] of [["owner", owner], ["provider", leaderRec]]) {
-    if (state.agreements[role]) continue;
-    const wallet = new ethers.Wallet(rec.privateKey);
-    // The payload builder sits behind a chain-service circuit breaker that can
-    // stay open for minutes; poll through 500/503 until it recovers.
-    let payload;
-    for (let i = 0; i < 24; i++) {
-      try {
-        payload = await http("GET", `/api/missions/${missionId}/quotes/${quoteId}/signing-payload`, { token: rec.token, retries: 0 });
-        break;
-      } catch (err) {
-        if (!/HTTP (500|503)/.test(err.message)) throw err;
-        log(`${role} signing-payload not ready (attempt ${i + 1}): ${err.message.slice(0, 120)}`);
-        await sleep(30000);
-      }
-    }
-    if (!payload) throw new Error(`${role}: signing-payload never became available`);
-    const signature = await signTypedFlexible(wallet, payload.json);
-    const res = await http("POST", `/api/missions/${missionId}/quotes/${quoteId}/sign`, { token: rec.token, body: { signature } });
-    state.agreements[role] = res.json;
-    save();
-    log(`agreement signed by ${role}`);
-  }
-
-  // 4. Native escrow payment via signing-batch (surfaces after both signatures).
-  if (!state.nativePaymentTxHash) {
-    let item = null;
-    for (let i = 0; i < 20 && !item; i++) {
-      const batch = await http("GET", `/api/missions/${missionId}/signing-batch`, { token: owner.token });
-      state.signingBatch = batch.json;
+      const submit = await http("POST", `/api/missions/${missionId}/signing-batch`, {
+        token: owner.token,
+        body: { signatures: [{ purpose: "native_payment", tx_hash: sent.hash }] },
+      });
+      state.nativePaymentTxHash = sent.hash;
+      state.nativePaymentSubmit = submit.json;
       save();
-      const pend = batch.json.pending_signatures || batch.json.pending || [];
-      item = pend.find((p) => p.purpose === "native_payment") || null;
-      if (!item) {
-        log(`signing-batch: native_payment not pending yet (pending=${pend.map((p) => p.purpose).join(",") || "none"})`);
-        await sleep(5000);
-      }
+      log("native payment submitted to signing-batch", submit.json);
     }
-    if (!item) throw new Error("native_payment never appeared in signing-batch");
 
-    const tx = item.tx;
-    if (Number(tx.chainId) !== CHAIN_ID) throw new Error(`native_payment tx chainId ${tx.chainId} != ${CHAIN_ID}`);
-    const wallet = new ethers.Wallet(owner.privateKey, provider587);
-    const value = BigInt(tx.value);
-    const gasPrice = BigInt(tx.gasPriceWei || tx.gasPrice || "300000000000");
-    let gasLimit;
-    try {
-      gasLimit = ((await provider587.estimateGas({ from: owner.address, to: tx.to, data: tx.data, value })) * 130n) / 100n;
-    } catch {
-      gasLimit = 2000000n;
+    // Refresh mission + on-chain status.
+    await bestEffort("mission_refresh", () => http("GET", `/api/missions/${missionId}`, { token: owner.token }));
+    for (let i = 0; i < 6; i++) {
+      const oc = await bestEffort("mission_onchain", () => http("GET", `/api/missions/${missionId}/onchain`, { token: owner.token }));
+      if (oc?.json && (oc.json.contract_address || oc.json.onchain_status || oc.json.status)) break;
+      await sleep(5000);
     }
-    const need = value + gasPrice * gasLimit;
-    const have = await provider587.getBalance(owner.address);
-    log(`native payment: value=${ethers.formatEther(value)} gasLimit=${gasLimit} need=${ethers.formatEther(need)} have=${ethers.formatEther(have)}`);
-    if (have < need) {
-      await fundNative(owner.address, need + ethers.parseEther("0.05"), "owner");
-    }
-    const sent = await wallet.sendTransaction({ to: tx.to, data: tx.data, value, gasPrice, gasLimit, type: 0, chainId: CHAIN_ID });
-    log(`native payment tx sent: ${sent.hash}`);
-    const receipt = await sent.wait();
-    if (receipt.status !== 1) throw new Error(`native payment tx reverted: ${sent.hash}`);
-    log(`native payment confirmed in block ${receipt.blockNumber}`);
 
-    const submit = await http("POST", `/api/missions/${missionId}/signing-batch`, {
-      token: owner.token,
-      body: { signatures: [{ purpose: "native_payment", tx_hash: sent.hash }] },
-    });
-    state.nativePaymentTxHash = sent.hash;
-    state.nativePaymentSubmit = submit.json;
+
+  } catch (err) {
+    state.steps.agreement_payment_phase = { ok: false, error: err.message.slice(0, 400) };
     save();
-    log("native payment submitted to signing-batch", submit.json);
+    log(`agreement/payment phase blocked (continuing to finalization): ${err.message.slice(0, 200)}`);
   }
-
-  // Refresh mission + on-chain status.
-  await bestEffort("mission_refresh", () => http("GET", `/api/missions/${missionId}`, { token: owner.token }));
-  for (let i = 0; i < 6; i++) {
-    const oc = await bestEffort("mission_onchain", () => http("GET", `/api/missions/${missionId}/onchain`, { token: owner.token }));
-    if (oc?.json && (oc.json.contract_address || oc.json.onchain_status || oc.json.status)) break;
-    await sleep(5000);
-  }
-
 
   // 9. Finalize + open collaboration (best effort).
   await bestEffort("constitutional_review", () => http("POST", `/api/deliberation/${proposalId}/constitutional-review`, { token: owner.token, body: {} }));
