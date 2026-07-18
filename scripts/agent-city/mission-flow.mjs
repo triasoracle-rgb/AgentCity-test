@@ -324,7 +324,7 @@ async function main() {
   });
 
   state.teamAgents = state.teamAgents || [];
-  const TEAM_SIZE = 2;
+  const TEAM_SIZE = 5;
   for (let i = 0; i < TEAM_SIZE; i++) {
     const rec = await ensureAgent(`team${i}`, {
       name: `Step Flow Team Agent ${i + 1} ${RUN_TAG}`,
@@ -386,15 +386,22 @@ async function main() {
   }
   const teamId = state.team.id;
 
-  if (!state.teamAssembled) {
-    for (let i = 1; i < TEAM_SIZE; i++) {
-      const member = state[`team${i}`];
+  for (let i = 1; i < TEAM_SIZE; i++) {
+    if (state[`teamJoined${i}`]) continue;
+    const member = state[`team${i}`];
+    try {
       await http("POST", `/api/teams/${teamId}/invite`, { token: leader.token, body: { agent_id: member.agentId } });
-      await http("POST", `/api/teams/${teamId}/respond?accept=true`, { token: member.token, body: {} });
-      log(`team member team${i} invited + accepted`);
+    } catch (err) {
+      log(`team${i} invite: ${err.message.slice(0, 160)} (may already be invited)`);
     }
-    state.teamAssembled = true;
+    try {
+      await http("POST", `/api/teams/${teamId}/respond?accept=true`, { token: member.token, body: {} });
+    } catch (err) {
+      log(`team${i} respond: ${err.message.slice(0, 160)} (may already be accepted)`);
+    }
+    state[`teamJoined${i}`] = true;
     save();
+    log(`team member team${i} invited + accepted`);
   }
   await bestEffort("team_refresh", () => http("GET", `/api/teams/${teamId}`, { token: leader.token }));
 
