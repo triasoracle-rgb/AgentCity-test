@@ -463,32 +463,85 @@ async function main() {
     log("quote accepted");
   }
 
-  // 4b. Provider stake: the agreement signing-payload 500s until the provider
-  // has staked lock_bps (20%) of the mission amount. Native mode: request the
-  // stake intent tx, send it from the provider wallet, confirm with tx_hash.
+  // 7. Evaluate proposal.
+  if (!state.evaluationSessionId) {
+    const res = await http("POST", `/api/deliberation/${missionId}/evaluate/open?round_number=1`, { token: owner.token, body: {} });
+    const s = res.json.session || res.json;
+    state.evaluationSessionId = s.id || s.session_id || s.evaluation_session_id;
+    state.evaluationOpen = res.json;
+    save();
+    log(`evaluation session: ${state.evaluationSessionId}`);
+  }
+  const evals = [
+    ["registrar", "identity", 92, "Team sponsorship and delegate identity are sufficient."],
+    ["speaker", "process", 90, "Proposal is complete and ready for deliberation."],
+    ["regulator", "compliance", 88, "No compliance blockers found in the workflow."],
+    ["codifier", "feasibility", 91, "Workflow DAG is feasible and within budget."],
+  ];
+  for (const [clerk_role, domain, score, reasoning] of evals) {
+    await bestEffort(`evaluate_${clerk_role}`, () =>
+      http("POST", `/api/deliberation/sessions/${state.evaluationSessionId}/evaluate`, {
+        token: owner.token,
+        body: { clerk_role, team_id: teamId, domain, score, reasoning },
+      }),
+    );
+  }
+  await bestEffort("shortlist", () => http("POST", `/api/deliberation/sessions/${state.evaluationSessionId}/shortlist`, { token: owner.token, body: {} }));
+  await bestEffort("evaluation_close", () => http("POST", `/api/deliberation/sessions/${state.evaluationSessionId}/close`, { token: owner.token, body: {} }));
+
+  // 8. Rank proposal.
+  if (!state.rankSessionId) {
+    const res = await http("POST", `/api/deliberation/${missionId}/rank/open?timeout_seconds=0`, { token: owner.token, body: {} });
+    const s = res.json.session || res.json;
+    state.rankSessionId = s.id || s.session_id || s.rank_session_id;
+    state.rankOpen = res.json;
+    save();
+    log(`rank session: ${state.rankSessionId}`);
+  }
+  for (const v of state.voters) {
+    await bestEffort(`vote_${v}`, () =>
+      http("POST", `/api/deliberation/sessions/${state.rankSessionId}/vote`, { token: state[v].token, body: { preferences: [teamId] } }),
+    );
+  }
+  await bestEffort("rank_state", () => http("GET", `/api/deliberation/sessions/${state.rankSessionId}/rank-state`, { token: owner.token }));
+  await bestEffort("tally", () => http("POST", `/api/deliberation/sessions/${state.rankSessionId}/tally`, { token: owner.token, body: {} }));
+
+  const props = await bestEffort("proposals_after_tally", () => http("GET", `/api/teams/mission/${missionId}/proposals`, { token: owner.token }));
+  const proposalList = Array.isArray(props?.json) ? props.json : props?.json?.proposals || [];
+  const winning = proposalList.find((p) => (p.team_id || p.teamId) === teamId) || proposalList[0] || state.proposal;
+  const proposalId = winning?.id || state.proposal?.id;
+  state.winningProposal = winning;
+  save();
+  log(`proposal for finalization: ${proposalId}`, { status: winning?.status });
+
+  // 4b. Provider-side stake. The agreement "provider" signer is the WINNING
+  // TEAM LEADER (not the quote creator): eip712-payload returns
+  // NOT_MISSION_PARTICIPANT for anyone else, and signing-payload 500s until a
+  // winner exists. The leader stakes lock_bps (20%) of the mission amount.
+  const leaderRec = state.team0;
   if (!state.providerStake) {
-    const dep = await http("GET", `/api/staking/${providerAgent.chainAgentId}/required-deposit?mission_amount=${QUOTE_PRICE}`, { token: providerAgent.token });
+    const dep = await http("GET", `/api/staking/${leaderRec.chainAgentId}/required-deposit?mission_amount=${QUOTE_PRICE}`, { token: leaderRec.token });
     log("provider required-deposit", dep.json);
     const needed = Number(dep.json.additional_needed ?? 0);
     if (needed > 0) {
-      const stakeRes = await http("POST", `/api/staking/${providerAgent.chainAgentId}/stake`, { token: providerAgent.token, body: { amount: needed } });
+      const stakeRes = await http("POST", `/api/staking/${leaderRec.chainAgentId}/stake`, { token: leaderRec.token, body: { amount: needed } });
       const intent = stakeRes.json.intent;
       if (!intent) throw new Error(`no stake intent in response: ${JSON.stringify(stakeRes.json).slice(0, 300)}`);
       const value = BigInt(intent.value);
       const gasPrice = BigInt(intent.suggestedGasPriceWei || "300000000000");
-      const wallet = new ethers.Wallet(providerAgent.privateKey, provider587);
+      const wallet = new ethers.Wallet(leaderRec.privateKey, provider587);
       let gasLimit;
       try {
         gasLimit = ((await provider587.estimateGas({ from: providerAgent.address, to: intent.to, data: intent.data, value })) * 130n) / 100n;
       } catch {
         gasLimit = 500000n;
       }
-      await fundNative(providerAgent.address, value + gasPrice * gasLimit + ethers.parseEther("0.01"), "provider");
+      await fundNative(leaderRec.address, value + gasPrice * gasLimit + ethers.parseEther("0.01"), "team0-leader");
       const sent = await wallet.sendTransaction({ to: intent.to, data: intent.data, value, gasPrice, gasLimit, type: 0, chainId: CHAIN_ID });
       log(`provider stake tx sent: ${sent.hash}`);
       const receipt = await sent.wait();
       if (receipt.status !== 1) throw new Error(`stake tx reverted: ${sent.hash}`);
-      const confirm = await http("POST", `/api/staking/${providerAgent.chainAgentId}/stake/confirm`, { token: providerAgent.token, body: { tx_hash: sent.hash } });
+      const confirm = await http("POST", `/api/staking/${leaderRec.chainAgentId}/stake/confirm`, { token: leaderRec.token, body: { tx_hash: sent.hash } });
       log("provider stake confirmed", confirm.json);
     }
     state.providerStake = { done: true, needed };
@@ -497,7 +550,7 @@ async function main() {
 
   // 5. Sign agreement (owner + provider); native chains have no USDC auth step.
   state.agreements = state.agreements || {};
-  for (const [role, rec] of [["owner", owner], ["provider", providerAgent]]) {
+  for (const [role, rec] of [["owner", owner], ["provider", leaderRec]]) {
     if (state.agreements[role]) continue;
     const wallet = new ethers.Wallet(rec.privateKey);
     const payload = await http("GET", `/api/missions/${missionId}/quotes/${quoteId}/signing-payload`, { token: rec.token });
@@ -565,56 +618,6 @@ async function main() {
     await sleep(5000);
   }
 
-  // 7. Evaluate proposal.
-  if (!state.evaluationSessionId) {
-    const res = await http("POST", `/api/deliberation/${missionId}/evaluate/open?round_number=1`, { token: owner.token, body: {} });
-    const s = res.json.session || res.json;
-    state.evaluationSessionId = s.id || s.session_id || s.evaluation_session_id;
-    state.evaluationOpen = res.json;
-    save();
-    log(`evaluation session: ${state.evaluationSessionId}`);
-  }
-  const evals = [
-    ["registrar", "identity", 92, "Team sponsorship and delegate identity are sufficient."],
-    ["speaker", "process", 90, "Proposal is complete and ready for deliberation."],
-    ["regulator", "compliance", 88, "No compliance blockers found in the workflow."],
-    ["codifier", "feasibility", 91, "Workflow DAG is feasible and within budget."],
-  ];
-  for (const [clerk_role, domain, score, reasoning] of evals) {
-    await bestEffort(`evaluate_${clerk_role}`, () =>
-      http("POST", `/api/deliberation/sessions/${state.evaluationSessionId}/evaluate`, {
-        token: owner.token,
-        body: { clerk_role, team_id: teamId, domain, score, reasoning },
-      }),
-    );
-  }
-  await bestEffort("shortlist", () => http("POST", `/api/deliberation/sessions/${state.evaluationSessionId}/shortlist`, { token: owner.token, body: {} }));
-  await bestEffort("evaluation_close", () => http("POST", `/api/deliberation/sessions/${state.evaluationSessionId}/close`, { token: owner.token, body: {} }));
-
-  // 8. Rank proposal.
-  if (!state.rankSessionId) {
-    const res = await http("POST", `/api/deliberation/${missionId}/rank/open?timeout_seconds=0`, { token: owner.token, body: {} });
-    const s = res.json.session || res.json;
-    state.rankSessionId = s.id || s.session_id || s.rank_session_id;
-    state.rankOpen = res.json;
-    save();
-    log(`rank session: ${state.rankSessionId}`);
-  }
-  for (const v of state.voters) {
-    await bestEffort(`vote_${v}`, () =>
-      http("POST", `/api/deliberation/sessions/${state.rankSessionId}/vote`, { token: state[v].token, body: { preferences: [teamId] } }),
-    );
-  }
-  await bestEffort("rank_state", () => http("GET", `/api/deliberation/sessions/${state.rankSessionId}/rank-state`, { token: owner.token }));
-  await bestEffort("tally", () => http("POST", `/api/deliberation/sessions/${state.rankSessionId}/tally`, { token: owner.token, body: {} }));
-
-  const props = await bestEffort("proposals_after_tally", () => http("GET", `/api/teams/mission/${missionId}/proposals`, { token: owner.token }));
-  const proposalList = Array.isArray(props?.json) ? props.json : props?.json?.proposals || [];
-  const winning = proposalList.find((p) => (p.team_id || p.teamId) === teamId) || proposalList[0] || state.proposal;
-  const proposalId = winning?.id || state.proposal?.id;
-  state.winningProposal = winning;
-  save();
-  log(`proposal for finalization: ${proposalId}`, { status: winning?.status });
 
   // 9. Finalize + open collaboration (best effort).
   await bestEffort("constitutional_review", () => http("POST", `/api/deliberation/${proposalId}/constitutional-review`, { token: owner.token, body: {} }));
