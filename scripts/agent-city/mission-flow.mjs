@@ -432,37 +432,6 @@ async function main() {
     log(`proposal submitted: ${state.proposal.id || JSON.stringify(state.proposal).slice(0, 200)}`);
   }
 
-  // 2. Quote
-  if (!state.quote) {
-    const res = await http("POST", `/api/missions/${missionId}/quotes`, {
-      token: providerAgent.token,
-      body: {
-        suggested_price: QUOTE_PRICE,
-        currency: "tNETX",
-        estimated_time: "2026-12-01T00:00:00Z",
-        description: "Quote submitted by an on-chain registered provider agent.",
-        confirmed_steps: [
-          { title: "Plan and acceptance criteria", description: "Confirm scope, constraints, and success criteria." },
-          { title: "Execute mission", description: "Complete the agreed deliverable." },
-          { title: "Verify and hand off", description: "Verify outputs and deliver evidence." },
-        ],
-      },
-    });
-    state.quoteResult = res.json;
-    state.quote = res.json.quote || res.json;
-    save();
-    log(`quote created: ${state.quote.id}`);
-  }
-  const quoteId = state.quote.id;
-
-  // 3. Accept quote
-  if (!state.accepted) {
-    const res = await http("POST", `/api/missions/${missionId}/quotes/${quoteId}/accept`, { token: owner.token, body: {} });
-    state.accepted = res.json;
-    save();
-    log("quote accepted");
-  }
-
   // 7. Evaluate proposal.
   if (!state.evaluationSessionId) {
     const res = await http("POST", `/api/deliberation/${missionId}/evaluate/open?round_number=1`, { token: owner.token, body: {} });
@@ -514,6 +483,40 @@ async function main() {
   save();
   log(`proposal for finalization: ${proposalId}`, { status: winning?.status });
 
+  // Quote is created by the WINNING TEAM LEADER after the tally (creating it
+  // earlier, or from a non-winning agent, leaves the agreement payload
+  // ungenerated and the signing endpoints failing).
+  if (!state.quote) {
+    const res = await http("POST", `/api/missions/${missionId}/quotes`, {
+      token: state.team0.token,
+      body: {
+        suggested_price: QUOTE_PRICE,
+        currency: "tNETX",
+        estimated_time: "2026-12-01T00:00:00Z",
+        description: "Quote submitted by an on-chain registered provider agent.",
+        confirmed_steps: [
+          { title: "Plan and acceptance criteria", description: "Confirm scope, constraints, and success criteria." },
+          { title: "Execute mission", description: "Complete the agreed deliverable." },
+          { title: "Verify and hand off", description: "Verify outputs and deliver evidence." },
+        ],
+      },
+    });
+    state.quoteResult = res.json;
+    state.quote = res.json.quote || res.json;
+    save();
+    log(`quote created: ${state.quote.id}`);
+  }
+  const quoteId = state.quote.id;
+
+  // 3. Accept quote
+  if (!state.accepted) {
+    const res = await http("POST", `/api/missions/${missionId}/quotes/${quoteId}/accept`, { token: owner.token, body: {} });
+    state.accepted = res.json;
+    save();
+    log("quote accepted");
+  }
+
+
   // 4b. Provider-side stake. The agreement "provider" signer is the WINNING
   // TEAM LEADER (not the quote creator): eip712-payload returns
   // NOT_MISSION_PARTICIPANT for anyone else, and signing-payload 500s until a
@@ -553,7 +556,20 @@ async function main() {
   for (const [role, rec] of [["owner", owner], ["provider", leaderRec]]) {
     if (state.agreements[role]) continue;
     const wallet = new ethers.Wallet(rec.privateKey);
-    const payload = await http("GET", `/api/missions/${missionId}/quotes/${quoteId}/signing-payload`, { token: rec.token });
+    // The payload builder sits behind a chain-service circuit breaker that can
+    // stay open for minutes; poll through 500/503 until it recovers.
+    let payload;
+    for (let i = 0; i < 24; i++) {
+      try {
+        payload = await http("GET", `/api/missions/${missionId}/quotes/${quoteId}/signing-payload`, { token: rec.token, retries: 0 });
+        break;
+      } catch (err) {
+        if (!/HTTP (500|503)/.test(err.message)) throw err;
+        log(`${role} signing-payload not ready (attempt ${i + 1}): ${err.message.slice(0, 120)}`);
+        await sleep(30000);
+      }
+    }
+    if (!payload) throw new Error(`${role}: signing-payload never became available`);
     const signature = await signTypedFlexible(wallet, payload.json);
     const res = await http("POST", `/api/missions/${missionId}/quotes/${quoteId}/sign`, { token: rec.token, body: { signature } });
     state.agreements[role] = res.json;
