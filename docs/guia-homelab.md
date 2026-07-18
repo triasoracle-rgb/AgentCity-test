@@ -152,6 +152,21 @@ sudo systemctl enable --now agentcity-flow.timer
 - El informe generado por `make-report.mjs` redacta claves y tokens, y es seguro de
   publicar.
 
+### Exportar las wallets a MetaMask
+
+```bash
+node scripts/agent-city/export-keys.mjs                  # todas las wallets, pide contraseña
+node scripts/agent-city/export-keys.mjs --roles owner    # solo algunas
+node scripts/agent-city/export-keys.mjs --plain          # claves en crudo por stdout
+```
+
+Genera un keystore JSON V3 cifrado por wallet en `runs/keystore/` (fuera de git,
+permisos 600) que MetaMask importa con "Importar cuenta → Archivo JSON". Antes de
+importar, añade la red NETX Testnet en MetaMask: RPC `https://testnetrpc.netxscan.io`,
+chain id `587`, símbolo `tNETX`, explorador `https://testnet.netxscan.io`. Con
+`--plain` las claves solo se imprimen por stdout (nunca a disco) para pegarlas en
+"Importar cuenta → Clave privada".
+
 ## 9. Wallets del último run (testnet NETX, chain 587)
 
 Direcciones generadas y registradas on-chain en la ejecución documentada en

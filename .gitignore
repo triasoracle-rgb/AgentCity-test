@@ -2,3 +2,4 @@ node_modules/
 runs/state.json
 runs/*.log
 .env
+runs/keystore/
