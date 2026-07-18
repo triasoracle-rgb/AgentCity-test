@@ -24,18 +24,23 @@ import { setGlobalDispatcher, ProxyAgent } from "undici";
 const PROXY_URL = process.env.HTTPS_PROXY || process.env.https_proxy;
 if (PROXY_URL) {
   setGlobalDispatcher(new ProxyAgent(PROXY_URL));
-  ethers.FetchRequest.registerGetUrl(async (req, signal) => {
+  ethers.FetchRequest.registerGetUrl(async (req) => {
+    // undici's fetch rejects forbidden headers that ethers sets itself.
+    const headers = { ...req.headers };
+    for (const k of Object.keys(headers)) {
+      if (["content-length", "host", "connection"].includes(k.toLowerCase())) delete headers[k];
+    }
     const resp = await fetch(req.url, {
       method: req.method,
-      headers: req.headers,
+      headers,
       body: req.body ?? undefined,
     });
-    const headers = {};
-    resp.headers.forEach((v, k) => (headers[k] = v));
+    const respHeaders = {};
+    resp.headers.forEach((v, k) => (respHeaders[k] = v));
     return {
       statusCode: resp.status,
       statusMessage: resp.statusText,
-      headers,
+      headers: respHeaders,
       body: new Uint8Array(await resp.arrayBuffer()),
     };
   });
