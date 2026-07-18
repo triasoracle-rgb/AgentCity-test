@@ -52,6 +52,10 @@ const CHAIN_ID = 587;
 const STATE_FILE = process.env.STATE_FILE || path.join("runs", "state.json");
 const RUN_TAG = Date.now();
 
+// Prices are in whole tNETX (1:1 with 1e18 wei on-chain): keep them faucet-sized.
+const MISSION_PRICE = 0.1;
+const QUOTE_PRICE = 0.095;
+
 const provider587 = new ethers.JsonRpcProvider(RPC, CHAIN_ID);
 
 // ---------------------------------------------------------------- state
@@ -361,7 +365,7 @@ async function main() {
       body: {
         title: `Step Flow On-chain Mission ${RUN_TAG}`,
         description: "Mission created through the step-based on-chain quote/agreement and proposal flow.",
-        price: 100,
+        price: MISSION_PRICE,
         currency: "tNETX",
         deadline: "2026-12-31T00:00:00Z",
         skills: [],
@@ -410,15 +414,15 @@ async function main() {
       token: leader.token,
       body: {
         description: `Step-flow proposal by Step Flow Proposal Team for mission ${missionId}.`,
-        proposed_cost: 95,
+        proposed_cost: QUOTE_PRICE,
         workflow: {
           nodes: [
-            { id: "n1", title: "Discovery and acceptance criteria", description: "Clarify mission scope, constraints, and measurable acceptance criteria.", required_skills: [], max_budget: 20, max_time_minutes: 45, min_benchmark: 70, pop_tier: 1 },
-            { id: "n2", title: "Implementation work", description: "Execute the main deliverable according to the agreed scope.", required_skills: [], max_budget: 55, max_time_minutes: 120, min_benchmark: 80, pop_tier: 1 },
-            { id: "n3", title: "Verification and handoff", description: "Verify the output, collect evidence, and deliver final artifacts.", required_skills: [], max_budget: 20, max_time_minutes: 60, min_benchmark: 75, pop_tier: 1 },
+            { id: "n1", title: "Discovery and acceptance criteria", description: "Clarify mission scope, constraints, and measurable acceptance criteria.", required_skills: [], max_budget: 0.02, max_time_minutes: 45, min_benchmark: 70, pop_tier: 1 },
+            { id: "n2", title: "Implementation work", description: "Execute the main deliverable according to the agreed scope.", required_skills: [], max_budget: 0.055, max_time_minutes: 120, min_benchmark: 80, pop_tier: 1 },
+            { id: "n3", title: "Verification and handoff", description: "Verify the output, collect evidence, and deliver final artifacts.", required_skills: [], max_budget: 0.02, max_time_minutes: 60, min_benchmark: 75, pop_tier: 1 },
           ],
           edges: [ { from: "n1", to: "n2" }, { from: "n2", to: "n3" } ],
-          total_budget: 95,
+          total_budget: QUOTE_PRICE,
           deadline: "2026-12-31T00:00:00Z",
         },
       },
@@ -433,7 +437,7 @@ async function main() {
     const res = await http("POST", `/api/missions/${missionId}/quotes`, {
       token: providerAgent.token,
       body: {
-        suggested_price: 95,
+        suggested_price: QUOTE_PRICE,
         currency: "tNETX",
         estimated_time: "2026-12-01T00:00:00Z",
         description: "Quote submitted by an on-chain registered provider agent.",
@@ -457,6 +461,38 @@ async function main() {
     state.accepted = res.json;
     save();
     log("quote accepted");
+  }
+
+  // 4b. Provider stake: the agreement signing-payload 500s until the provider
+  // has staked lock_bps (20%) of the mission amount. Native mode: request the
+  // stake intent tx, send it from the provider wallet, confirm with tx_hash.
+  if (!state.providerStake) {
+    const dep = await http("GET", `/api/staking/${providerAgent.chainAgentId}/required-deposit?mission_amount=${QUOTE_PRICE}`, { token: providerAgent.token });
+    log("provider required-deposit", dep.json);
+    const needed = Number(dep.json.additional_needed ?? 0);
+    if (needed > 0) {
+      const stakeRes = await http("POST", `/api/staking/${providerAgent.chainAgentId}/stake`, { token: providerAgent.token, body: { amount: needed } });
+      const intent = stakeRes.json.intent;
+      if (!intent) throw new Error(`no stake intent in response: ${JSON.stringify(stakeRes.json).slice(0, 300)}`);
+      const value = BigInt(intent.value);
+      const gasPrice = BigInt(intent.suggestedGasPriceWei || "300000000000");
+      const wallet = new ethers.Wallet(providerAgent.privateKey, provider587);
+      let gasLimit;
+      try {
+        gasLimit = ((await provider587.estimateGas({ from: providerAgent.address, to: intent.to, data: intent.data, value })) * 130n) / 100n;
+      } catch {
+        gasLimit = 500000n;
+      }
+      await fundNative(providerAgent.address, value + gasPrice * gasLimit + ethers.parseEther("0.01"), "provider");
+      const sent = await wallet.sendTransaction({ to: intent.to, data: intent.data, value, gasPrice, gasLimit, type: 0, chainId: CHAIN_ID });
+      log(`provider stake tx sent: ${sent.hash}`);
+      const receipt = await sent.wait();
+      if (receipt.status !== 1) throw new Error(`stake tx reverted: ${sent.hash}`);
+      const confirm = await http("POST", `/api/staking/${providerAgent.chainAgentId}/stake/confirm`, { token: providerAgent.token, body: { tx_hash: sent.hash } });
+      log("provider stake confirmed", confirm.json);
+    }
+    state.providerStake = { done: true, needed };
+    save();
   }
 
   // 5. Sign agreement (owner + provider); native chains have no USDC auth step.
