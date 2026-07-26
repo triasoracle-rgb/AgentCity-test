@@ -1,6 +1,6 @@
 # Trazabilidad on-chain completa del flujo AgentCity
 
-Generado: 2026-07-18T13:02:40.947Z · Bloque actual: 554446
+Generado: 2026-07-26T09:21:17.666Z · Bloque actual: 780418
 Red: NETX testnet (chain id 587) · RPC: https://testnetrpc.netxscan.io · Explorador: https://testnet.netxscan.io
 
 ## 1. El flujo AgentCity de forma holística
@@ -18,7 +18,7 @@ La cadena solo se toca donde hay valor o identidad en juego:
 | 5. Deliberación (evaluaciones, shortlist, ranking, tally) | API | ninguna (la gobernanza es off-chain; ancla evidencia opcionalmente vía EvidenceAnchor) |
 | 6. Stake del líder ganador (20 % del quote) | cadena | tx `stake(agentId, amount)` al StakingRegistry **enviada por la propia wallet** con valor nativo |
 | 7. Agreement (owner + líder) | API | firmas EIP-712 sobre el payload construido por el chain-service |
-| 8. Pago del escrow | cadena | tx nativa del owner al MissionFactory (valor = quote + fee) vía signing-batch |
+| 8. Pago del escrow | cadena | `createMission()` al MissionFactory (valor = quote + fee). El endpoint `signing-batch` documenta que el *cliente* firma y envía esta tx, pero en la práctica observada el **relayer del backend** la ejecutó automáticamente en cuanto detectó ambas firmas del agreement, sin esperar la tx manual del cliente; una tx manual enviada en paralelo revierte (el contrato ya ha sido creado) |
 | 9. Codificación, firmas de clerks, colaboración | API | dag_hash calculado; despliegue verificado |
 | 10. Fondeo | cadena | txs del relayer del faucet (`0x84d995ee26754f62b26699f43d945399f6048bdc`) de 0.1 tNETX |
 
@@ -60,16 +60,22 @@ de wallets tienen nonce 0 aunque su identidad esté on-chain.
 | 27 | 2026-07-18 00:44:39Z | 539688 | [`0x4896807f98bd…`](https://testnet.netxscan.io/tx/0x4896807f98bd2e520c421fde0d149c8810afdb63e963d95cece4314da9bb93bc) | Fondeo del faucet → team0 | `0x84d995ee…` → wallet team0 | 0.1 | ✔ |
 | 28 | 2026-07-18 00:44:45Z | 539690 | [`0x522c5f66f954…`](https://testnet.netxscan.io/tx/0x522c5f66f954f19471429c8bc151ceec8f2b0641bec3978ea5d653a4ca85f56e) | Fondeo del faucet → team0 | `0x84d995ee…` → wallet team0 | 0.1 | ✔ |
 | 29 | 2026-07-18 00:44:51Z | 539692 | [`0xfcc731f4f1b9…`](https://testnet.netxscan.io/tx/0xfcc731f4f1b9b8a5860c07f9fd98d8c4b6c32233628665da7d6c873d89483e63) | Stake de colateral (team0) | wallet team0 → stakingRegistry | 0.019 | ✔ |
+| 30 | 2026-07-26 09:15:00Z | 780295 | [`0xf038c4563cb5…`](https://testnet.netxscan.io/tx/0xf038c4563cb5532975eb74972fd40adf5147997cb6bb5bffaf0f441815bb1f3c) | Pago de escrow de misión relayado por el backend | `0x84d995ee…` → missionFactory | 0.097375 | ✔ |
+| 31 | 2026-07-26 09:15:09Z | 780298 | [`0x013e869c0a95…`](https://testnet.netxscan.io/tx/0x013e869c0a95e5864f79d880b2bfe6e6979f4ecc5bd7bcbd353cf44077e2b79b) | Fondeo del faucet → owner | `0x84d995ee…` → wallet owner | 0.1 | ✔ |
+| 32 | 2026-07-26 09:15:15Z | 780300 | [`0xe2f7cebe67e3…`](https://testnet.netxscan.io/tx/0xe2f7cebe67e30fe1bc3232b8719dd6c4fa2f8a9fdf576fc33aec1731fc9e512c) | Fondeo del faucet → owner | `0x84d995ee…` → wallet owner | 0.1 | ✔ |
+| 33 | 2026-07-26 09:15:21Z | 780302 | [`0x6346fe8912c0…`](https://testnet.netxscan.io/tx/0x6346fe8912c06c646e6249956763100ea8145c362beee09b34b6542e52f89f1d) | Fondeo del faucet → owner | `0x84d995ee…` → wallet owner | 0.1 | ✔ |
+| 34 | 2026-07-26 09:15:27Z | 780304 | [`0xeba384c1c372…`](https://testnet.netxscan.io/tx/0xeba384c1c37225134bead6abfc2914a0a36b543db6eb190c9dc8a39e08f15258) | Fondeo del faucet → owner | `0x84d995ee…` → wallet owner | 0.1 | ✔ |
+| 35 | 2026-07-26 09:15:33Z | 780306 | [`0xbaaa6268c4b7…`](https://testnet.netxscan.io/tx/0xbaaa6268c4b7edb01cd894d57061d83b7b75b2df292cae65ff1f88004a0bd1cb) | Intento de pago de escrow desde el cliente (owner) — revertido, ya cubierto por el relayer | wallet owner → missionFactory | 0.097375 | ✖ |
 
-Total: 29 transacciones relacionadas con las wallets del flujo.
+Total: 35 transacciones relacionadas con las wallets del flujo.
 
 ## 3. Estado final por wallet
 
 | Rol | Dirección | Agent | Balance | Stake total | Stake bloqueado |
 |---|---|---|---|---|---|
-| owner | [`0xEB9DaBB66448a8F0dFF3a6580ffeA8B8845917C1`](https://testnet.netxscan.io/address/0xEB9DaBB66448a8F0dFF3a6580ffeA8B8845917C1) | 69 | 0.4 | 0 | 0 |
+| owner | [`0xEB9DaBB66448a8F0dFF3a6580ffeA8B8845917C1`](https://testnet.netxscan.io/address/0xEB9DaBB66448a8F0dFF3a6580ffeA8B8845917C1) | 69 | 0.783069 | 0 | 0 |
 | provider | [`0x18d07Bcf67a70C0Dd9ff3a42F0dB2BEeF8E7Ee01`](https://testnet.netxscan.io/address/0x18d07Bcf67a70C0Dd9ff3a42F0dB2BEeF8E7Ee01) | 70 | 0.743325 | 0.019 | 0 |
-| team0 | [`0xe2C3F65EdF0Ce588242F2b4B2730D3B025629EFF`](https://testnet.netxscan.io/address/0xe2C3F65EdF0Ce588242F2b4B2730D3B025629EFF) | 71 | 0.143325 | 0.019 | 0 |
+| team0 | [`0xe2C3F65EdF0Ce588242F2b4B2730D3B025629EFF`](https://testnet.netxscan.io/address/0xe2C3F65EdF0Ce588242F2b4B2730D3B025629EFF) | 71 | 0.143325 | 0.019 | 0.019 |
 | team1 | [`0x938508B138250ED60Ad0b2e6D3eFD4F93515Ac76`](https://testnet.netxscan.io/address/0x938508B138250ED60Ad0b2e6D3eFD4F93515Ac76) | 72 | 0 | 0 | 0 |
 | team2 | [`0xE5C7a4b1cFccE545A20814398B40bb5Dce6258Ae`](https://testnet.netxscan.io/address/0xE5C7a4b1cFccE545A20814398B40bb5Dce6258Ae) | 76 | 0.1 | 0 | 0 |
 | team3 | [`0x0e3dCf117e2064AbdFdd51Ad8cF6135453E3BAA0`](https://testnet.netxscan.io/address/0x0e3dCf117e2064AbdFdd51Ad8cF6135453E3BAA0) | 77 | 0.1 | 0 | 0 |
@@ -80,11 +86,11 @@ Total: 29 transacciones relacionadas con las wallets del flujo.
 
 ## 4. Estado final de la misión (API)
 
-- Misión: `676068cc-05fa-4947-b156-692f1d8a8e7c` — estado `accepted`
+- Misión: `676068cc-05fa-4947-b156-692f1d8a8e7c` — estado `in_progress`
 - Propuesta ganadora: `c108f0a4-3358-4ef4-8b1e-8d766d8e84d6` (estado `winner`)
 - Colaboración: `470ebaa2-9248-4d2f-af7b-540b0a750d0a` — dag_hash `0xd5a95ee3cae6d91dc202e5fc9f4dfaa02e447ebfc95ae14d41e805b36971b978`, nodos: n1=waiting, n2=waiting, n3=waiting
-- Despliegue on-chain de la misión: pendiente (`Mission is not deployed on-chain`) — bloqueado por la caída del chain-service que construye el agreement
-- Pago de escrow: no ejecutado aún (requiere el agreement firmado)
+- Despliegue on-chain de la misión: **desplegada** — contrato [`0x48b7328cd07804025f2835e28f072bb0bf90f83b`](https://testnet.netxscan.io/address/0x48b7328cd07804025f2835e28f072bb0bf90f83b), estado `InProgress`, tx [`0xf038c4563cb5532975eb74972fd40adf5147997cb6bb5bffaf0f441815bb1f3c`](https://testnet.netxscan.io/tx/0xf038c4563cb5532975eb74972fd40adf5147997cb6bb5bffaf0f441815bb1f3c), bloque 780295
+- Pago de escrow: ejecutado por el **relayer del backend** (no por el cliente) al detectar ambas firmas — ver tx [`0xf038c4563cb55329…`](https://testnet.netxscan.io/tx/0xf038c4563cb5532975eb74972fd40adf5147997cb6bb5bffaf0f441815bb1f3c) en la sección 2
 
 ## 5. Contratos de la plataforma
 
@@ -97,4 +103,5 @@ Total: 29 transacciones relacionadas con las wallets del flujo.
 | governanceRegistry | [`0x02Fa505012D29c1405EF3592d78f1D9bE9f9bf49`](https://testnet.netxscan.io/address/0x02Fa505012D29c1405EF3592d78f1D9bE9f9bf49) |
 | sanctionRegistry | [`0x71D916F5aA56eff03128FE5E9c9E662B224186F0`](https://testnet.netxscan.io/address/0x71D916F5aA56eff03128FE5E9c9E662B224186F0) |
 | evidenceAnchor | [`0x55930E18EaA8cDD8a6471FB46E526f2546D49323`](https://testnet.netxscan.io/address/0x55930E18EaA8cDD8a6471FB46E526f2546D49323) |
+| investmentVaultFactory | [`0xC7c7d069Ae1bc48F5B7B715BE0B0016BD70ba6da`](https://testnet.netxscan.io/address/0xC7c7d069Ae1bc48F5B7B715BE0B0016BD70ba6da) |
 | usdc | [`0xe400c07A1ea70228b2148B934278f1fD7A91F1b7`](https://testnet.netxscan.io/address/0xe400c07A1ea70228b2148B934278f1fD7A91F1b7) |

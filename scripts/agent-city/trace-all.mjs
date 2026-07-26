@@ -82,14 +82,21 @@ for (const w of wallets) {
 }
 
 // 2. Relayer registerFor() txs on the AgentRegistry that mention our wallets.
+// AgentRegistry is a shared contract used by every mission on the platform,
+// so pagination is unbounded in principle; keep going until every wallet's
+// registration has been found (or a generous page cap is hit).
 const agentRegistry = state.config?.addresses?.agentRegistry;
 const ourHex = wallets.map((w) => w.address.slice(2).toLowerCase());
+const registeredRoles = new Set();
 let pageParams = "";
-for (let page = 0; page < 6; page++) {
+for (let page = 0; page < 80 && registeredRoles.size < wallets.length; page++) {
   const j = await getJson(`${EXPLORER}/api/v2/addresses/${agentRegistry}/transactions${pageParams}`);
   for (const t of j.items || []) {
     const input = (t.raw_input || "").toLowerCase();
-    if (ourHex.some((h) => input.includes(h))) {
+    const matchedHex = ourHex.find((h) => input.includes(h));
+    if (matchedHex) {
+      const role = wallets.find((w) => w.address.slice(2).toLowerCase() === matchedHex)?.role;
+      registeredRoles.add(role);
       ledger.set(t.hash, {
         hash: t.hash,
         blockNumber: String(t.block_number),
@@ -102,7 +109,52 @@ for (let page = 0; page < 6; page++) {
         input: t.raw_input || "",
         _method: t.method || "",
         _relayed: true,
-        _forRole: byAddr[("0x" + (ourHex.find((h) => input.includes(h)) || ""))] || wallets.find((w) => input.includes(w.address.slice(2).toLowerCase()))?.role,
+        _forRole: role,
+      });
+    }
+  }
+  if (!j.next_page_params) break;
+  const p = j.next_page_params;
+  pageParams = `?${Object.entries(p).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`;
+}
+console.error(`registros de agentes encontrados: ${registeredRoles.size}/${wallets.length}`);
+
+// 3. Relayer-submitted escrow payments (createMission) on the MissionFactory:
+// the client wallet's address never appears in the calldata (it encodes
+// on-chain agent ids, not wallet addresses). Small integer agent ids collide
+// too often as a bare 32-byte-padded substring (other missions on the same
+// shared contract reference unrelated small ids), so require BOTH the
+// client's and the matched quote's provider chain_agent_id to appear
+// together in the same calldata — that pair is specific to one agreement.
+const missionFactory = state.config?.addresses?.missionFactory;
+const agentIdHex = wallets
+  .filter((w) => w.chainAgentId != null)
+  .map((w) => ({ role: w.role, pad: w.chainAgentId.toString(16).padStart(64, "0") }));
+const ownerPad = state.owner?.chainAgentId != null ? state.owner.chainAgentId.toString(16).padStart(64, "0") : null;
+let escrowFound = false;
+pageParams = "";
+for (let page = 0; page < 80 && missionFactory && ownerPad && !escrowFound; page++) {
+  const j = await getJson(`${EXPLORER}/api/v2/addresses/${missionFactory}/transactions${pageParams}`);
+  for (const t of j.items || []) {
+    const input = (t.raw_input || "").toLowerCase();
+    if (!input.includes(ownerPad)) continue; // must involve our client agent id
+    const providerHit = agentIdHex.find((a) => a.role !== "owner" && input.includes(a.pad));
+    if (providerHit) {
+      if (t.result === "success") escrowFound = true;
+      ledger.set(t.hash, {
+        hash: t.hash,
+        blockNumber: String(t.block_number),
+        timeStamp: String(Math.floor(new Date(t.timestamp).getTime() / 1000)),
+        from: t.from?.hash || "",
+        to: t.to?.hash || missionFactory,
+        value: t.value || "0",
+        gasUsed: t.gas_used || "",
+        isError: t.result === "success" ? "0" : "1",
+        input: t.raw_input || "",
+        _method: t.method || "",
+        _relayed: true,
+        _forRole: providerHit.role,
+        _escrow: true,
       });
     }
   }
@@ -117,12 +169,18 @@ function classify(t) {
   const from = (t.from || "").toLowerCase();
   const to = (t.to || "").toLowerCase();
   const sel = (t.input || "").slice(0, 10);
+  if (t._escrow) {
+    const ownWallet = byAddr[from];
+    if (ownWallet) return `Intento de pago de escrow desde el cliente (${ownWallet}) — ${t.isError === "0" ? "ejecutado" : "revertido, ya cubierto por el relayer"}`;
+    return `Pago de escrow de misión relayado por el backend`;
+  }
   if (t._relayed || t._method === "registerFor") {
     const role = t._forRole ?? "?";
     return `Registro on-chain del agente (${role}) relayado por el backend`;
   }
   if (CONTRACTS[to] === "stakingRegistry" && sel === "0x7b0472f0") return `Stake de colateral (${byAddr[from] ?? from})`;
-  if (CONTRACTS[to] === "missionFactory") return `Pago de escrow de misión (${byAddr[from] ?? from})`;
+  if (CONTRACTS[to] === "missionFactory" && t.isError === "0") return `Pago de escrow de misión (${byAddr[from] ?? from})`;
+  if (CONTRACTS[to] === "missionFactory" && t.isError !== "0") return `Intento de pago de escrow FALLIDO (${byAddr[from] ?? from}) — ya cubierto por el relayer`;
   if (byAddr[to] && !byAddr[from]) return `Fondeo del faucet → ${byAddr[to]}`;
   if (byAddr[from]) return `Salida de ${byAddr[from]}`;
   return "Otra";
@@ -170,7 +228,7 @@ La cadena solo se toca donde hay valor o identidad en juego:
 | 5. Deliberación (evaluaciones, shortlist, ranking, tally) | API | ninguna (la gobernanza es off-chain; ancla evidencia opcionalmente vía EvidenceAnchor) |
 | 6. Stake del líder ganador (20 % del quote) | cadena | tx \`stake(agentId, amount)\` al StakingRegistry **enviada por la propia wallet** con valor nativo |
 | 7. Agreement (owner + líder) | API | firmas EIP-712 sobre el payload construido por el chain-service |
-| 8. Pago del escrow | cadena | tx nativa del owner al MissionFactory (valor = quote + fee) vía signing-batch |
+| 8. Pago del escrow | cadena | \`createMission()\` al MissionFactory (valor = quote + fee). El endpoint \`signing-batch\` documenta que el *cliente* firma y envía esta tx, pero en la práctica observada el **relayer del backend** la ejecutó automáticamente en cuanto detectó ambas firmas del agreement, sin esperar la tx manual del cliente; una tx manual enviada en paralelo revierte (el contrato ya ha sido creado) |
 | 9. Codificación, firmas de clerks, colaboración | API | dag_hash calculado; despliegue verificado |
 | 10. Fondeo | cadena | txs del relayer del faucet (${faucetSenders.map((f) => `\`${f}\``).join(", ") || "n/a"}) de 0.1 tNETX |
 
@@ -202,8 +260,8 @@ ${balances.map((b) => `| ${b.role} | [\`${b.address}\`](${EXPLORER}/address/${b.
 - Misión: \`${missionId ?? "-"}\` — estado \`${mission?.status ?? mission?.mission?.status ?? "?"}\`
 - Propuesta ganadora: \`${state.winningProposal?.id ?? "-"}\` (estado \`${winning?.status ?? state.winningProposal?.status ?? "?"}\`)
 - Colaboración: \`${collabId ?? "-"}\`${collab ? ` — dag_hash \`${collab.dag_hash}\`, nodos: ${collab.nodes?.map((n) => `${n.node_id}=${n.status}`).join(", ")}` : ""}
-- Despliegue on-chain de la misión: ${onchain?.status === 200 ? "desplegada" : `pendiente (\`${onchain?.json?.detail ?? onchain?.json?.error?.message ?? "?"}\`) — bloqueado por la caída del chain-service que construye el agreement`}
-- Pago de escrow: ${state.nativePaymentTxHash ? `[\`${state.nativePaymentTxHash}\`](${EXPLORER}/tx/${state.nativePaymentTxHash})` : "no ejecutado aún (requiere el agreement firmado)"}
+- Despliegue on-chain de la misión: ${onchain?.status === 200 ? `**desplegada** — contrato [\`${onchain.json.mission_address}\`](${EXPLORER}/address/${onchain.json.mission_address}), estado \`${onchain.json.contract_status_label}\`, tx [\`${onchain.json.transaction_hash}\`](${EXPLORER}/tx/${onchain.json.transaction_hash}), bloque ${onchain.json.block_number}` : `pendiente (\`${onchain?.json?.detail ?? onchain?.json?.error?.message ?? "?"}\`) — bloqueado por la caída del chain-service que construye el agreement`}
+- Pago de escrow: ${onchain?.status === 200 ? `ejecutado por el **relayer del backend** (no por el cliente) al detectar ambas firmas — ver tx [\`${onchain.json.transaction_hash.slice(0, 18)}…\`](${EXPLORER}/tx/${onchain.json.transaction_hash}) en la sección 2` : state.nativePaymentTxHash ? `[\`${state.nativePaymentTxHash}\`](${EXPLORER}/tx/${state.nativePaymentTxHash})` : "no ejecutado aún (requiere el agreement firmado)"}
 
 ## 5. Contratos de la plataforma
 
