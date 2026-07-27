@@ -168,14 +168,108 @@ chain-commit como best-effort (registra el fallo y continúa hacia
 `verify_node`/`finalize_node` para completar la documentación del estado,
 en vez de abortar).
 
-**Respuesta final a "¿puedo completar una misión con un agente hoy?"**: no,
-por ninguno de los dos caminos conocidos. El camino REST
-(`actions/complete`/`actions/release`) sigue devolviendo `INTERNAL_ERROR`
-(fallo B) y el camino de colaboración por nodos está bloqueado por este
-cuarto fallo (registro de `chain_node_id` ausente). Ambos son fallos de
-backend ajenos al cliente; ambos han quedado completamente documentados y
-con scripts listos (`mission-flow.mjs`, `collab-node-runner.mjs`) para
-completar la misión automáticamente en cuanto AgentCity los resuelva.
+### Tercera actualización: cómo se encontró la ruta correcta (comparando con una misión ya completada)
+
+Petición del usuario como doble verificación: si hay misiones genuinamente
+completadas en la testnet, deberían dar la pista de la ruta correcta.
+**Así fue.**
+
+`GET /api/missions?status=completed&limit=100` devolvió 242 misiones con
+`status: "completed"`, pero de esas, **66 de 100** en la muestra tenían
+además `chain_derived_status: "completed"` (liquidación on-chain real,
+distinta de nuestras propias misiones de hoy, que aparecen con
+`status: "completed"` pero `chain_derived_status: "in_progress"` — la
+misma discrepancia off-chain/on-chain ya documentada). Se inspeccionó en
+detalle la más reciente: `72ae8b85-d70f-456e-ac12-8d459311d2ff`
+("... public MCP eight-agent smoke", 2026-07-26 06:52–07:01 UTC),
+con `contract_status_label: "Resolved"` (estado **5**, no 1/"InProgress"
+como las nuestras).
+
+Comparando `GET /api/teams/mission/{id}/proposals` de esa misión contra
+la nuestra se descubrió el dato clave: cada nodo del workflow tiene un
+campo `live_node_id` (además del `id` corto tipo "n1") que **no** pertenece
+al sistema de colaboración (`/api/collaboration/*`) que habíamos estado
+usando, sino a un sistema de ejecución NeurIPS-nativo completamente
+distinto: `GET /api/neurips/nodes/{live_node_id}`. En la misión de
+referencia esos nodos tenían `state: "Completed"`, `onchain_node_id`
+(un hash real) y `onchain_settle_tx` (tx real); en la nuestra,
+`state: "Idle"` — **nunca se habían tocado**, pese a todo lo que hicimos
+vía `/api/collaboration/*`. Los dos sistemas coexisten en paralelo y solo
+uno de ellos —el NeurIPS— es el que de verdad liquida la misión.
+
+**Máquina de estados NeurIPS descubierta y verificada en vivo** (probada
+con éxito sobre los 3 nodos de la misión `7e3919d8-...`, automatizada en
+`scripts/agent-city/neurips-node-runner.mjs`):
+
+```
+Idle
+  → POST /api/neurips/nodes/{id}/route              → Invoked
+  → POST /api/neurips/nodes/{id}/commit {output_hash}      → Committed
+  → POST /api/neurips/nodes/{id}/guard               → Guarding
+  → POST /api/neurips/nodes/{id}/verifying           → Verifying
+  → POST /api/neurips/nodes/{id}/verify/tier1 {submitted_hash, expected_hash}  → (registra el veredicto, no cambia el estado)
+  → POST /api/neurips/nodes/{id}/gated               → Gated
+  → POST /api/neurips/nodes/{id}/record              → Recording
+  → POST /api/neurips/nodes/{id}/complete            → Completed
+```
+
+Cada paso devuelve `409 CONFLICT — Cannot transition ... expected <X>` si
+se salta uno, así que el orden se descubrió por tanteo directo pero es
+**estricto y determinista** — no hay trampas de estado como en el otro
+sistema. Los 3 nodos de la misión `7e3919d8-...` llegaron a `Completed`
+sin ningún problema.
+
+**Pero el asentamiento final sigue bloqueado — y ahora sabemos por qué,
+con precisión milimétrica.** `GET /api/dev/settlement/{missionId}/journal`
+(y el equivalente `GET /api/missions/{id}/execution-settlement`, más
+detallado) expone el trabajo de un **worker de asentamiento en segundo
+plano** que sondea cada ~10s (`GET /api/dev/settlement/status` →
+`tick_count` subiendo en vivo, `poll_interval: 10`) e intenta liquidar
+cada nodo `Completed`. Para nuestros 3 nodos, tras 11-14 reintentos en 5
+minutos, el journal muestra siempre:
+
+```json
+{"step": "binding_wait", "last_error": "waiting for settlement mission binding: governance chain_node_id is missing"}
+```
+
+Es el **mismo campo exacto** (`chain_node_id`) que bloqueaba
+`finalize_node` en el otro sistema — confirma que es una única causa raíz
+compartida por ambos caminos, no dos fallos independientes.
+
+**La prueba de que es intermitente, no permanente**: el journal de la
+misión de referencia (`72ae8b85-...`) muestra sus 3 nodos con
+`"step": "settle_submitted"`, `commit_tx_hash` y `settle_tx_hash` reales
+— es decir, **el mismo paso que a nosotros nos falla sí funcionó
+ayer, 2026-07-26 entre las 06:58 y las 07:00 UTC**. Esa ventana es
+~2 horas *antes* de que detectáramos la recuperación del chain-service
+(~09:14 UTC) — sugiriendo que el subsistema que asigna `chain_node_id`
+tuvo una ventana de funcionamiento independiente y ya ha vuelto a
+fallar hoy.
+
+**Consecuencia práctica importante**: como el worker de asentamiento ya
+está reintentando nuestros 3 nodos automáticamente cada ~10s, **no hace
+falta relanzar nada manualmente cuando el fallo D se recupere** — el
+propio backend completará la liquidación on-chain sin más intervención
+nuestra. La Routine automática ahora vigila
+`GET /api/dev/settlement/7e3919d8.../journal` en vez de sondear
+`prepare_node_chain_commit` directamente, porque es una señal mucho más
+limpia y específica.
+
+### Respuesta final a "¿puedo completar una misión con un agente hoy?"
+
+No, por ninguno de los dos caminos — pero ahora con una causa raíz común,
+precisa y con nombre (`governance chain_node_id` no se asigna), en vez de
+dos fallos aparentemente independientes. Ambos son fallos de backend ajenos
+al cliente. Todo el trabajo del lado del cliente está terminado y listo:
+
+- `mission-flow.mjs` — completa la misión por el camino REST en cuanto el
+  fallo B se recupere.
+- `collab-node-runner.mjs` — camino de colaboración (documentado, pero
+  probablemente redundante frente al hallazgo de esta sección).
+- `neurips-node-runner.mjs` — el camino que **de verdad usan las misiones
+  que se completan** en esta testnet; lleva los nodos a `Completed` de
+  forma fiable y solo espera a que el worker de asentamiento del backend
+  vuelva a asignar `chain_node_id` para terminar solo.
 
 ## 3. Registros ERC-8004 (identidad/reputación/validación) vía 8004-Scan
 

@@ -222,12 +222,27 @@ Escritura bloqueada por dos motivos distintos, ambos de **diseño**, no bugs:
 | A | Chain-service de `signing-payload`/`eip712-payload` (agreement) | 500 `INTERNAL_ERROR` | **Recuperado** el 26/07 tras ~8 días caído |
 | B | Constructor de payloads de `actions/{complete,release}` y `rate/payload` | 500 `INTERNAL_ERROR` en TODO tipo de misión (confirmado con misión de equipo y misión simple de 2 agentes) | **Roto**, sigue vigilado por la Routine automática |
 | C | Creación de bóveda de inversión (`vault/create/payload`, `vault/mock-setup`) | 502 / 500 `INTERNAL_ERROR` | **Roto**, descubierto el 27/07, sin vigilancia automática todavía |
-| D | Registro on-chain de nodos de colaboración (`prepare_node_chain_commit`) | `409 collaboration chain node is not registered yet`, en cualquier orden de llamada; bloquea `finalize_node` con `missing_markers: ["chain_node_id"]` | **Roto**, confirmado el 27/07 en 2 misiones distintas con ambos órdenes posibles — ver `docs/exploracion-2026-07-27.md` §2 |
+| D | Asignación de `governance chain_node_id` a los nodos del DAG | Bloquea tanto `prepare_node_chain_commit` (`409 collaboration chain node is not registered yet`) como el worker de asentamiento automático (`GET /api/dev/settlement/{id}/journal` → `"step":"binding_wait"`, `"last_error":"waiting for settlement mission binding: governance chain_node_id is missing"`) | **Roto pero intermitente**: una misión de referencia real (`72ae8b85-...`) completó este mismo paso con éxito el 26/07 entre las 06:58–07:00 UTC — ver `docs/exploracion-2026-07-27.md` §2 |
+
+**Causa raíz unificada del fallo D**: existen **dos sistemas de ejecución de
+nodos DAG en paralelo** — el de colaboración (`/api/collaboration/*` +
+herramientas MCP `bind_node_service`/`route_node_task`/etc., usado en
+`collab-node-runner.mjs`) y el NeurIPS-nativo
+(`/api/neurips/nodes/{live_node_id}/*`, usado en
+`neurips-node-runner.mjs`, descubierto comparando con la misión de
+referencia que sí se completó). **El segundo es el que realmente usan las
+misiones que llegan a liquidarse on-chain** en esta testnet — el primero
+no aparece en ningún ejemplo de misión completada revisado. Ambos caminos
+comparten el mismo bloqueo final: la asignación del campo
+`chain_node_id`, que un worker de backend debe generar y actualmente no
+genera para misiones nuevas. Como ese worker reintenta solo cada ~10s, en
+cuanto el fallo D se recupere **la liquidación ocurre automáticamente**,
+sin necesidad de relanzar ningún script.
 
 Con el fallo D confirmado, **ninguno de los dos caminos de cierre de misión**
-(REST `actions/complete`/`actions/release`, o colaboración por nodos vía
-`signing-batch`) funciona hoy en este despliegue — ambos son fallos de
-backend, no del cliente.
+(REST `actions/complete`/`actions/release`, o ejecución de nodos vía
+NeurIPS + `signing-batch`) funciona hoy en este despliegue — ambos son
+fallos de backend, no del cliente.
 
 ## Restricciones de plataforma (no son bugs, son diseño)
 
