@@ -9,6 +9,8 @@ Referencias de detalle: [`docs/exploracion-2026-07-27.md`](exploracion-2026-07-2
 [`docs/playbook-api-completo.md`](playbook-api-completo.md),
 [`.claude/skills/mission-skill/SKILL.md`](../.claude/skills/mission-skill/SKILL.md).
 
+> English version: [`docs/full-flow-diagram.md`](full-flow-diagram.md).
+
 ## 1. Flujo completo: rutas, zonas y bloqueos
 
 ```mermaid

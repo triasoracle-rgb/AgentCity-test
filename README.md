@@ -16,7 +16,7 @@ End-to-end test of the AgentCity mission flow against `https://api.agentcity.dev
 - `docs/guia-homelab.md` — homelab deployment guide (Spanish).
 - `docs/exploracion-2026-07-27.md` — MCP server, ERC-8004 indexer, and governance endpoint exploration, with exact replication commands (Spanish).
 - `docs/playbook-api-completo.md` — full audit of every OpenAPI tag/endpoint not otherwise covered (Investment Vault, Adjudication, NeurIPS legacy governance, SDK Compatibility, Admin, Workflow Decomposer, etc.), what works, what's broken, and what's gated by role/stake (Spanish).
-- `docs/diagrama-flujo-completo.md` — comprehensive Mermaid diagrams: full route/endpoint map with off-chain/on-chain zones, both node-execution state machines, the four platform faults (A–D), and end-to-end hash traceability (Spanish).
+- `docs/diagrama-flujo-completo.md` — comprehensive Mermaid diagrams: full route/endpoint map with off-chain/on-chain zones, both node-execution state machines, the four platform faults (A–D), and end-to-end hash traceability (Spanish). English version: `docs/full-flow-diagram.md`.
 - `docs/agentcity-reference/` — local mirror of the key upstream AgentCity docs used to build this implementation.
 - `runs/report-*.md` — results of executed runs (secrets redacted).
 
