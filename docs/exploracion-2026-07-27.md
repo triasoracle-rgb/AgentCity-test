@@ -108,30 +108,60 @@ nodos `n1`/`n2`/`n3`:
    devolvió `409 CONFLICT — Predecessor 'n1' is not COMPLETED`. Un nodo
    atascado bloquea todo lo que depende de él.
 
-**Secuencia correcta para no quedar atascado** (no probada hasta el final por
-falta de tiempo, pero derivada de los errores anteriores):
+### Actualización (misma fecha, sesión posterior): secuencia corregida, probada de verdad
+
+Se creó una **tercera misión** (`f4bb14ae-1430-457c-bf8e-c6e267806059`,
+colaboración `594ee654-...`) específicamente para validar la secuencia
+corregida con `scripts/agent-city/collab-node-runner.mjs`. Resultado: **se
+llegó mucho más lejos que antes**, ejecutando trabajo real:
 
 ```
-deploy_package_service (apiSchema único, para que tu agente sea el dueño)
-  → bind_node_service (contractId, nodeId, serviceId)   # nodo → eligible (si no tiene predecesores pendientes)
-  → submit_node_bid (bidderAgentId = dueño del servicio) # AÚN eligible
-  → close_node_bidding                                   # selecciona al ganador
+deploy_package_service (apiSchema único → tu agente es el dueño)
+  → bind_node_service (contractId, nodeId, serviceId)
+  → submit_node_bid (bidderAgentId = dueño del servicio)
+  → close_node_bidding(force=true)   *** ANTES de rutear, si no, atasco permanente ***
   → route_node_task (executingTeamId)                    # nodo → executing
-  → invoke_node_service (payload con "source": "<python>")
-  → prepare_node_proof → firmar typed_data externamente → submit_node_proof
-  → prepare_node_chain_commit → firmar → submit_node_chain_commit
-  → verify_node
+  → invoke_node_service (payload {"source": "<python>"})  # ✅ ejecuta código real, exit_code 0
+  → prepare_node_proof → firmar typed_data → submit_node_proof   # nodo → pending_verification
+  → prepare_node_chain_commit → firmar → submit_node_chain_commit  *** ANTES de verify_node ***
+  → verify_node                                           # nodo → pending_finalization (Tier-1, verificación por hash)
   → finalize_node
 ```
 
-Repetir para cada nodo en orden topológico; solo entonces
-`get_mission_signing_batch` debería exponer `mission_complete`.
+**Segunda trampa de orden descubierta**: llamar `verify_node` inmediatamente
+después de `submit_node_proof` (sin pasar antes por
+`prepare_node_chain_commit`/`submit_node_chain_commit`) funciona — el nodo
+avanza a `pending_finalization` con verificación Tier-1 por hash superada —
+pero entonces `prepare_node_chain_commit` responde `409 chain commit is
+available only after proof submission` (mensaje engañoso: en realidad ya no
+está disponible porque el nodo ya se verificó) y `finalize_node` responde
+`409 Node finalization is awaiting on-chain commitment` con
+`missing_markers: ["chain_node_id"]`. El **orden real y estricto** es
+`proof → chain-commit → verify → finalize`, no `proof → verify → chain-commit
+→ finalize`. `collab-node-runner.mjs` ya implementa el orden corregido.
 
-**Estado dejado en la misión real tras la exploración** (documentado, no
-corregido): nodo `n1` en `executing` sin puja ganadora válida (atascado),
-`n2` en `waiting` (bloqueado por `n1`), `n3` intacto en `waiting`. Esto no
-afecta el camino de cierre que sigue la Routine automática (`actions/complete`
-vía REST), que es independiente de la ejecución de nodos de colaboración.
+**Resultado final de las tres misiones reales creadas hoy** (ninguna llegó a
+`mission_complete`/`funds_release` todavía):
+
+| Misión | Nodo `n1` | Causa |
+|---|---|---|
+| `676068cc-...` (26/07) | atascado en `executing` | ruteado antes de cerrar la puja |
+| `fadd9259-...` (27/07) | atascado en `executing` | mismo error, repetido a propósito para confirmarlo |
+| `f4bb14ae-...` (27/07) | atascado en `pending_finalization` | verificado antes del chain-commit — mucho más avanzado, pero aún incompleto |
+
+No se ha completado ningún nodo de principio a fin todavía, pero la causa
+del bloqueo en la tercera misión es **conocida, corregida en el script, y
+no requiere una cuarta misión de prueba** — el propio
+`collab-node-runner.mjs`, con el orden ya arreglado, debería completar un
+nodo limpio en un próximo intento sobre una misión nueva.
+
+Esto significa que, a día de hoy, **ninguno de los dos caminos de cierre**
+(el REST `actions/complete`/`actions/release`, ni el de nodos de
+colaboración vía `signing-batch`) ha producido un `mission_complete`
+verificado — el primero por el fallo B de backend (§ver playbook), el
+segundo por la complejidad genuina de su máquina de estados, ahora bien
+documentada y con una implementación (`collab-node-runner.mjs`) lista para
+reintentarlo.
 
 ## 3. Registros ERC-8004 (identidad/reputación/validación) vía 8004-Scan
 
