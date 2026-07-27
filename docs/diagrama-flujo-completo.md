@@ -130,8 +130,6 @@ flowchart TD
     P2 -.->|"firmas habilitan"| R1
     WORKER -.->|"cuando funciona:<br/>commit_tx_hash / settle_tx_hash"| GR
     C3 -.-> RR
-
-    click FAULTA "https://github.com" "Fallo A: recuperado"
 ```
 
 ## 2. Máquinas de estado de los dos sistemas de nodos
@@ -147,9 +145,9 @@ stateDiagram-v2
     BidClosed --> Executing: route_node_task
     Executing --> Executing: invoke_node_service (código real, exit 0)
     Executing --> PendingVerification: submit_node_proof (EIP-712 NodeProof)
-    PendingVerification --> PendingVerification: submit_node_chain_commit\n(409: "chain node not registered yet")
+    PendingVerification --> PendingVerification: submit_node_chain_commit - 409 chain node not registered yet
     PendingVerification --> PendingFinalization: verify_node (Tier-1 pasa)
-    PendingFinalization --> [*]: finalize_node\n(409 missing_markers:["chain_node_id"])
+    PendingFinalization --> [*]: finalize_node - 409 missing_markers chain_node_id
 
     note right of Executing
         TRAMPA 1: si route_node_task se llama
@@ -175,7 +173,7 @@ stateDiagram-v2
     Invoked --> Committed: POST /commit {output_hash}
     Committed --> Guarding: POST /guard
     Guarding --> Verifying: POST /verifying
-    Verifying --> Verifying: POST /verify/tier1\n(submitted_hash == expected_hash)
+    Verifying --> Verifying: POST /verify/tier1 - submitted_hash == expected_hash
     Verifying --> Gated: POST /gated
     Gated --> Recording: POST /record
     Recording --> Completed: POST /complete
@@ -198,7 +196,7 @@ stateDiagram-v2
     commit_submitted --> settle_submitted: tx de settlement confirmada
     settle_submitted --> [*]
 
-    binding_wait --> binding_wait: FALLO D (intermitente)\n"governance chain_node_id is missing"\npoll cada ~10s, sin intervención manual
+    binding_wait --> binding_wait: FALLO D intermitente - governance chain_node_id is missing - poll cada ~10s, sin intervención manual
 
     note left of binding_wait
         Misión de referencia (completada):
@@ -234,13 +232,13 @@ flowchart LR
     H2 --> H3
     H3 --> H4
     H4 --> H5
-    H5 -.->|verify/tier1: submitted_hash == expected_hash| H4
+    H5 -.->|"verify/tier1: submitted_hash == expected_hash"| H4
     H6 --> H10
     H4 --> H7
-    H7 -->|"cuando SÍ se asigna\n(worker sano)"| H8 --> H9
-    H7 -.->|"ausente → binding_wait\nno hay tx de settlement"| H9
+    H7 -->|"cuando SÍ se asigna<br/>(worker sano)"| H8 --> H9
+    H7 -.->|"ausente → binding_wait<br/>no hay tx de settlement"| H9
 
-    H10 -.->|"submitida automáticamente por\n0x84d995ee...\nal completar ambas firmas"| ONCHAIN["MissionFactory\n(NETX testnet, chain 587)"]:::tx
+    H10 -.->|"submitida automáticamente por<br/>0x84d995ee...<br/>al completar ambas firmas"| ONCHAIN["MissionFactory<br/>(NETX testnet, chain 587)"]:::tx
     H11 -.-> ONCHAIN
     H9 -.-> ONCHAIN
 ```
