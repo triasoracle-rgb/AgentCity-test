@@ -128,40 +128,54 @@ deploy_package_service (apiSchema único → tu agente es el dueño)
   → finalize_node
 ```
 
-**Segunda trampa de orden descubierta**: llamar `verify_node` inmediatamente
-después de `submit_node_proof` (sin pasar antes por
-`prepare_node_chain_commit`/`submit_node_chain_commit`) funciona — el nodo
-avanza a `pending_finalization` con verificación Tier-1 por hash superada —
-pero entonces `prepare_node_chain_commit` responde `409 chain commit is
-available only after proof submission` (mensaje engañoso: en realidad ya no
-está disponible porque el nodo ya se verificó) y `finalize_node` responde
-`409 Node finalization is awaiting on-chain commitment` con
-`missing_markers: ["chain_node_id"]`. El **orden real y estricto** es
-`proof → chain-commit → verify → finalize`, no `proof → verify → chain-commit
-→ finalize`. `collab-node-runner.mjs` ya implementa el orden corregido.
+### Segunda actualización: descartado el orden, es un fallo real de plataforma
 
-**Resultado final de las tres misiones reales creadas hoy** (ninguna llegó a
-`mission_complete`/`funds_release` todavía):
+Se creó una **cuarta misión** (`7e3919d8-e0a9-4872-8c3b-0582d21302d3`,
+colaboración `326a72bc-...`) con `collab-node-runner.mjs` ya corregido para
+llamar `prepare_node_chain_commit` **antes** de `verify_node`. Resultado:
+`prepare_node_chain_commit` falló igualmente, con un mensaje distinto y más
+claro: `409 CONFLICT — collaboration chain node is not registered yet`.
+Reintentado tras una espera (por si era una sincronización asíncrona): mismo
+error, persistente.
 
-| Misión | Nodo `n1` | Causa |
+Para confirmar que esto es un fallo real y no otra trampa de orden, se
+verificó exhaustivamente en la cuarta misión:
+
+1. `verify_node` **siempre** tiene éxito (verificación Tier-1 por hash,
+   `verdict: passed`) y mueve el nodo a `pending_finalization`,
+   independientemente de si `chain-commit` se intentó antes o después.
+2. `finalize_node` **siempre** falla con `409 Node finalization is awaiting
+   on-chain commitment`, `missing_markers: ["chain_node_id"]`.
+3. No existe ningún endpoint (REST ni MCP) descubierto que registre ese
+   `chain_node_id` — `prepare_node_chain_commit` es el único candidato y
+   siempre responde que el nodo "aún no está registrado".
+
+**Conclusión definitiva**: el camino de finalización por nodos de
+colaboración está **roto de raíz** en este despliegue — no es un problema
+de secuencia (ya se probaron ambos órdenes posibles, `proof→verify→commit`
+y `proof→commit→verify`, con el mismo resultado terminal). Es un
+**cuarto fallo de plataforma**, distinto de los otros tres:
+
+| Misión | Nodo `n1` | Diagnóstico final |
 |---|---|---|
-| `676068cc-...` (26/07) | atascado en `executing` | ruteado antes de cerrar la puja |
+| `676068cc-...` (26/07) | atascado en `executing` | error nuestro: ruteado antes de cerrar la puja |
 | `fadd9259-...` (27/07) | atascado en `executing` | mismo error, repetido a propósito para confirmarlo |
-| `f4bb14ae-...` (27/07) | atascado en `pending_finalization` | verificado antes del chain-commit — mucho más avanzado, pero aún incompleto |
+| `f4bb14ae-...` (27/07) | atascado en `pending_finalization` | llegó hasta `verify_node`, pero el registro on-chain del nodo nunca se generó |
+| `7e3919d8-...` (27/07) | atascado en `pending_finalization` | confirmado con el orden correcto: mismo fallo, no era un problema de secuencia |
 
-No se ha completado ningún nodo de principio a fin todavía, pero la causa
-del bloqueo en la tercera misión es **conocida, corregida en el script, y
-no requiere una cuarta misión de prueba** — el propio
-`collab-node-runner.mjs`, con el orden ya arreglado, debería completar un
-nodo limpio en un próximo intento sobre una misión nueva.
+`collab-node-runner.mjs` quedó actualizado para tratar el paso de
+chain-commit como best-effort (registra el fallo y continúa hacia
+`verify_node`/`finalize_node` para completar la documentación del estado,
+en vez de abortar).
 
-Esto significa que, a día de hoy, **ninguno de los dos caminos de cierre**
-(el REST `actions/complete`/`actions/release`, ni el de nodos de
-colaboración vía `signing-batch`) ha producido un `mission_complete`
-verificado — el primero por el fallo B de backend (§ver playbook), el
-segundo por la complejidad genuina de su máquina de estados, ahora bien
-documentada y con una implementación (`collab-node-runner.mjs`) lista para
-reintentarlo.
+**Respuesta final a "¿puedo completar una misión con un agente hoy?"**: no,
+por ninguno de los dos caminos conocidos. El camino REST
+(`actions/complete`/`actions/release`) sigue devolviendo `INTERNAL_ERROR`
+(fallo B) y el camino de colaboración por nodos está bloqueado por este
+cuarto fallo (registro de `chain_node_id` ausente). Ambos son fallos de
+backend ajenos al cliente; ambos han quedado completamente documentados y
+con scripts listos (`mission-flow.mjs`, `collab-node-runner.mjs`) para
+completar la misión automáticamente en cuanto AgentCity los resuelva.
 
 ## 3. Registros ERC-8004 (identidad/reputación/validación) vía 8004-Scan
 

@@ -122,31 +122,45 @@ async function runNode(nodeId, serviceId) {
   const proofSig = await signTyped(leaderWallet, proofPayload.typed_data || proofPayload);
   await mcpCall("submit_node_proof", { authToken: leader.token, contractId, nodeId, signature: proofSig, proofPayloadId: proofPayload.payload_id, outputHash });
 
-  // Chain-commit MUST happen before verify_node: calling verify first moves
-  // the node to pending_finalization and prepare_node_chain_commit then
-  // 409s with "chain commit is available only after proof submission" even
-  // though the proof clearly exists -- the real message is "before verify".
-  // finalize_node also 409s afterwards with "awaiting_onchain_commitment"
-  // (missing_markers: ["chain_node_id"]) if this step is skipped.
-  log(`node ${nodeId}: prepare + submit chain-commit (must precede verify)`);
-  const commitPayload = await mcpCall("prepare_node_chain_commit", { authToken: leader.token, contractId, nodeId });
-  const td = commitPayload.typed_data || commitPayload;
-  const commitSig = await signTyped(leaderWallet, td);
-  await mcpCall("submit_node_chain_commit", {
-    authToken: leader.token, contractId, nodeId,
-    signer: leader.address, signature: commitSig,
-    nonce: td.message?.nonce ?? commitPayload.nonce,
-    sigDeadline: td.message?.sigDeadline ?? td.message?.deadline ?? commitPayload.sigDeadline,
-    codeHash: commitPayload.code_hash ?? td.message?.codeHash,
-    outputHash,
-  });
+  // KNOWN PLATFORM GAP (confirmed 2026-07-27, reproduced on 2 separate
+  // missions in both possible orders): prepare_node_chain_commit fails with
+  // "409 collaboration chain node is not registered yet" no matter when
+  // it's called. verify_node still succeeds (Tier-1 hash verification) and
+  // moves the node to pending_finalization, but finalize_node then always
+  // 409s with "awaiting_onchain_commitment" (missing_markers:
+  // ["chain_node_id"]). There is no discovered API/MCP call that registers
+  // this chain_node_id -- the collaboration-node completion path is
+  // currently a dead end on this deployment regardless of step order. This
+  // block is left in place (best-effort) in case the backend starts
+  // registering nodes automatically; expect it to throw.
+  log(`node ${nodeId}: prepare + submit chain-commit (currently broken server-side, see comment above)`);
+  try {
+    const commitPayload = await mcpCall("prepare_node_chain_commit", { authToken: leader.token, contractId, nodeId });
+    const td = commitPayload.typed_data || commitPayload;
+    const commitSig = await signTyped(leaderWallet, td);
+    await mcpCall("submit_node_chain_commit", {
+      authToken: leader.token, contractId, nodeId,
+      signer: leader.address, signature: commitSig,
+      nonce: td.message?.nonce ?? commitPayload.nonce,
+      sigDeadline: td.message?.sigDeadline ?? td.message?.deadline ?? commitPayload.sigDeadline,
+      codeHash: commitPayload.code_hash ?? td.message?.codeHash,
+      outputHash,
+    });
+    log(`node ${nodeId}: chain-commit succeeded (platform gap may be fixed!)`);
+  } catch (err) {
+    log(`node ${nodeId}: chain-commit failed as expected (continuing to verify): ${err.message.slice(0, 150)}`);
+  }
 
   log(`node ${nodeId}: verify`);
   await mcpCall("verify_node", { authToken: owner.token, contractId, nodeId, verdict: "passed" });
 
   log(`node ${nodeId}: finalize`);
-  const final = await mcpCall("finalize_node", { authToken: owner.token, contractId, nodeId });
-  log(`node ${nodeId}: FINALIZED`, final);
+  try {
+    const final = await mcpCall("finalize_node", { authToken: owner.token, contractId, nodeId });
+    log(`node ${nodeId}: FINALIZED`, final);
+  } catch (err) {
+    log(`node ${nodeId}: finalize failed (blocked on missing chain_node_id, a known platform gap): ${err.message.slice(0, 200)}`);
+  }
 }
 
 async function main() {

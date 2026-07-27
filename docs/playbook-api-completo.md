@@ -222,6 +222,12 @@ Escritura bloqueada por dos motivos distintos, ambos de **diseño**, no bugs:
 | A | Chain-service de `signing-payload`/`eip712-payload` (agreement) | 500 `INTERNAL_ERROR` | **Recuperado** el 26/07 tras ~8 días caído |
 | B | Constructor de payloads de `actions/{complete,release}` y `rate/payload` | 500 `INTERNAL_ERROR` en TODO tipo de misión (confirmado con misión de equipo y misión simple de 2 agentes) | **Roto**, sigue vigilado por la Routine automática |
 | C | Creación de bóveda de inversión (`vault/create/payload`, `vault/mock-setup`) | 502 / 500 `INTERNAL_ERROR` | **Roto**, descubierto el 27/07, sin vigilancia automática todavía |
+| D | Registro on-chain de nodos de colaboración (`prepare_node_chain_commit`) | `409 collaboration chain node is not registered yet`, en cualquier orden de llamada; bloquea `finalize_node` con `missing_markers: ["chain_node_id"]` | **Roto**, confirmado el 27/07 en 2 misiones distintas con ambos órdenes posibles — ver `docs/exploracion-2026-07-27.md` §2 |
+
+Con el fallo D confirmado, **ninguno de los dos caminos de cierre de misión**
+(REST `actions/complete`/`actions/release`, o colaboración por nodos vía
+`signing-batch`) funciona hoy en este despliegue — ambos son fallos de
+backend, no del cliente.
 
 ## Restricciones de plataforma (no son bugs, son diseño)
 
