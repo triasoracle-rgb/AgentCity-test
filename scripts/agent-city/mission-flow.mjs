@@ -664,6 +664,44 @@ async function main() {
   }
   await bestEffort("proposals_final", () => http("GET", `/api/teams/mission/${missionId}/proposals`, { token: owner.token }));
 
+  // 10. Execute workflow steps, complete + release on-chain, rate both sides
+  // (best effort; only meaningful once the mission contract is deployed).
+  const deployCheck = await bestEffort("onchain_check_before_execution", () => http("GET", `/api/missions/${missionId}/onchain`, { token: owner.token }));
+  if (deployCheck?.json?.contract_status_label) {
+    const wf = await bestEffort("workflow_components_list", () => http("GET", `/api/missions/${missionId}/quotes/${quoteId}/workflow/components`, { token: leader.token }));
+    for (const comp of wf?.json || []) {
+      if (comp.status === "done") continue;
+      await bestEffort(`workflow_start_${comp.id}`, () => http("PATCH", `/api/missions/${missionId}/quotes/${quoteId}/workflow/components/${comp.id}/start`, { token: leader.token, body: {} }));
+      await bestEffort(`workflow_complete_${comp.id}`, () => http("PATCH", `/api/missions/${missionId}/quotes/${quoteId}/workflow/components/${comp.id}/complete`, { token: leader.token, body: {} }));
+    }
+
+    async function signedAction(actionName, rec) {
+      const payload = await http("POST", `/api/missions/${missionId}/actions/${actionName}/payload`, { token: rec.token, body: {} });
+      const wallet = new ethers.Wallet(rec.privateKey);
+      const signature = await signTypedFlexible(wallet, payload.json);
+      const sig = splitSig(signature);
+      return http("POST", `/api/missions/${missionId}/actions/${actionName}`, {
+        token: rec.token,
+        body: { v: sig.v, r: sig.r, s: sig.s, nonce: payload.json.nonce, expiry: payload.json.expiry, client_amount: "0", provider_amount: "0" },
+      });
+    }
+    // "complete" is provider-only, "release" is client-only.
+    await bestEffort("action_complete", () => signedAction("complete", leader));
+    await bestEffort("action_release", () => signedAction("release", owner));
+
+    async function submitRating(rec, score, comment) {
+      const payload = await http("POST", `/api/missions/${missionId}/rate/payload`, { token: rec.token, body: { score, comment } });
+      const wallet = new ethers.Wallet(rec.privateKey);
+      const signature = await signTypedFlexible(wallet, payload.json);
+      return http("POST", `/api/missions/${missionId}/rate`, { token: rec.token, body: { signature } });
+    }
+    await bestEffort("rate_owner", () => submitRating(owner, 5, "Escrow settled via mission-flow.mjs automated run."));
+    await bestEffort("rate_leader", () => submitRating(leader, 5, "Clear scope and on-time payment."));
+
+    await bestEffort("reputation_owner", () => http("GET", `/api/delegate-agents/${owner.agentId}/reputation`, { token: owner.token }));
+    await bestEffort("reputation_leader", () => http("GET", `/api/delegate-agents/${leader.agentId}/reputation`, { token: leader.token }));
+  }
+
   // Final status.
   const finalMission = await bestEffort("final_mission", () => http("GET", `/api/missions/${missionId}`, { token: owner.token }));
   const finalOnchain = await bestEffort("final_onchain", () => http("GET", `/api/missions/${missionId}/onchain`, { token: owner.token }));
@@ -678,6 +716,8 @@ async function main() {
     nativePaymentTxHash: state.nativePaymentTxHash,
     missionStatus: finalMission?.json?.mission?.status || finalMission?.json?.status,
     onchain: finalOnchain?.json || null,
+    actionComplete: state.steps.action_complete,
+    actionRelease: state.steps.action_release,
   };
   state.summary = summary;
   save();
