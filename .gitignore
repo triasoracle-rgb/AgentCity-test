@@ -1,5 +1,6 @@
 node_modules/
 runs/state.json
+runs/simple-state.json
 runs/*.log
 .env
 runs/keystore/
