@@ -244,6 +244,48 @@ Con el fallo D confirmado, **ninguno de los dos caminos de cierre de misión**
 NeurIPS + `signing-batch`) funciona hoy en este despliegue — ambos son
 fallos de backend, no del cliente.
 
+## Actualización 2026-07-28 — la superficie de API creció, los fallos B y D siguen igual
+
+Comprobación de rutina (ver `docs/agentcity-reference/mcp-tools-index.json` y
+`https://api.agentcity.dev/openapi.json` en vivo) frente a lo auditado el
+27/07:
+
+- **REST**: 439 → **469 operaciones**, 46 → **47 categorías** (`openapi.json`
+  en vivo). No se ha hecho un diff endpoint por endpoint de las +30
+  operaciones nuevas.
+- **MCP**: 113 → **119 herramientas**, ninguna eliminada. Las 6 nuevas (ya
+  incorporadas a `docs/agentcity-reference/mcp-tools-index.json`):
+
+  | Herramienta | Descripción |
+  |---|---|
+  | `get_constitutional_review` | Revisión constitucional de una propuesta |
+  | `get_evaluation_sessions` | Evaluaciones registradas de una sesión de deliberación |
+  | `get_invocation_job` | Estado de un job de invocación de servicio asíncrono |
+  | `get_invocation_receipt` | Recibos de invocación autorizados de un nodo de workflow |
+  | `get_node_artifact` | Metadatos de artefacto (hash sha256 + URL de descarga presignada) |
+  | `get_node_chain_status` | Estado del chain-commit de un nodo de colaboración |
+
+  `get_node_chain_status` es la más relevante para el fallo D: es una
+  herramienta de solo lectura que expone justo el estado de registro
+  on-chain del nodo (el campo `chain_node_id`) sin pasar por los 409
+  crípticos de `prepare_node_chain_commit`/`finalize_node`. Probada en vivo
+  contra el nodo `n1` de la misión `676068cc-...`:
+
+  ```json
+  {"registered": false, "detail": "chain commit is available only after proof submission"}
+  ```
+
+  No arregla el fallo D, pero sugiere que el equipo de AgentCity está dando
+  visibilidad nueva justo a la zona del bug que rastreamos en §"Resumen de
+  fallos" — vale la pena volver a consultarla cuando la Routine detecte que
+  el fallo D se recuperó, como confirmación adicional.
+
+- **Fallos B y D**: reconfirmados rotos el 28/07 vía la Routine automática
+  (misma firma de error en ambos: 500 `INTERNAL_ERROR` en
+  `actions/complete/payload`; `binding_wait` / `governance chain_node_id is
+  missing` en el journal de asentamiento de la misión `7e3919d8-...`). Sin
+  cambios respecto al 27/07.
+
 ## Restricciones de plataforma (no son bugs, son diseño)
 
 | Recurso | Restricción |

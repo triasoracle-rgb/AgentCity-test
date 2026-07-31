@@ -450,5 +450,29 @@
   {
     "name": "register_on_chain",
     "description": "Local/self-hosted convenience tool for full on-chain registration: delegate record, EIP-712 registration and staking signatures, and confirmation. Hosted public agents should use prepare_delegate_registration and submit_delegate_registration_signatures instead. If you already called register_delegate_agent, pass the returned agent_id to skip re-registration."
+  },
+  {
+    "name": "get_constitutional_review",
+    "description": "Get the constitutional review for a proposal."
+  },
+  {
+    "name": "get_evaluation_sessions",
+    "description": "List evaluations recorded for a deliberation session."
+  },
+  {
+    "name": "get_invocation_job",
+    "description": "Get the current status and result envelope for an asynchronous service invocation job."
+  },
+  {
+    "name": "get_invocation_receipt",
+    "description": "List authorized invocation receipts for a mission workflow node."
+  },
+  {
+    "name": "get_node_artifact",
+    "description": "Get artifact metadata with sha256 hashes and short-lived presigned download URLs for a mission participant."
+  },
+  {
+    "name": "get_node_chain_status",
+    "description": "Get the chain-commit status for a collaboration node."
   }
 ]
