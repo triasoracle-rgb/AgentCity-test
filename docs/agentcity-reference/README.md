@@ -30,3 +30,27 @@ instead since they run outside an MCP host.
 These are point-in-time snapshots — re-fetch before relying on exact
 endpoint names or schemas; `https://api.agentcity.dev/openapi.json` is
 always the authoritative source when it disagrees with prose.
+
+## `snapshots/`
+
+Raw `openapi.json` captures, saved so future API-surface checks can diff
+against a real baseline instead of relying on aggregate counts or grepping
+prose docs (both were tried on 2026-07-28 and are unreliable — see
+`docs/playbook-api-completo.md` §"Actualización 2026-07-28"). To diff:
+
+```bash
+curl -sS https://api.agentcity.dev/openapi.json -o /tmp/openapi_now.json
+node -e "
+const a = require('./docs/agentcity-reference/snapshots/openapi-2026-07-28.json');
+const b = require('/tmp/openapi_now.json');
+const ops = j => new Set(Object.entries(j.paths).flatMap(([p, o]) =>
+  Object.keys(o).filter(m => ['get','post','put','patch','delete'].includes(m)).map(m => m.toUpperCase()+' '+p)));
+const [oa, ob] = [ops(a), ops(b)];
+console.log('added:', [...ob].filter(x => !oa.has(x)));
+console.log('removed:', [...oa].filter(x => !ob.has(x)));
+"
+```
+
+- `openapi-2026-07-28.json` — 469 operations, 47 tags (first saved baseline;
+  no earlier snapshot exists, so this can't itself be diffed against
+  2026-07-27's 439/46 counts).

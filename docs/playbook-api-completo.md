@@ -286,6 +286,33 @@ Comprobación de rutina (ver `docs/agentcity-reference/mcp-tools-index.json` y
   missing` en el journal de asentamiento de la misión `7e3919d8-...`). Sin
   cambios respecto al 27/07.
 
+- **Diff exacto de las +30 operaciones REST: intentado, no es fiable.** No
+  existe un snapshot guardado del `openapi.json` del 27/07 (solo los
+  conteos agregados de arriba), y Wayback Machine no es alcanzable desde
+  este entorno. Un heurístico de "¿esta ruta aparece mencionada en algún
+  doc/script del repo?" marcó 364 de las 469 operaciones actuales como "no
+  mencionadas" — muy por encima del delta de 30, lo que confirma que el
+  heurístico es inútil (nuestros docs narran flujos, no enumeran cada
+  endpoint). Se guardó un snapshot real (`snapshots/openapi-2026-07-28.json`)
+  para que la próxima comprobación sí pueda diffear de verdad — ver
+  `docs/agentcity-reference/README.md`.
+
+  Sí se pudo verificar con certeza qué rutas REST respaldan 5 de las 6
+  herramientas MCP nuevas (cruzando por tag/nombre en el spec en vivo):
+  `get_constitutional_review` → `GET/POST /api/deliberation/{proposal_id}/constitutional-review`;
+  `get_evaluation_sessions` → `GET /api/deliberation/sessions/{session_id}/evaluations`;
+  `get_invocation_job` → `GET /api/microservices/jobs/{job_id}`;
+  `get_invocation_receipt` → `GET /api/missions/{mission_id}/nodes/{node_id}/invocations`;
+  `get_node_artifact` → `GET /api/collaboration/{contract_id}/nodes/{node_id}/artifacts`.
+  La sexta, `get_node_chain_status`, **no tiene ruta nueva**: envuelve la
+  ruta ya existente `GET .../nodes/{node_id}/chain-commit-payload` —
+  confirmado probándola en vivo, devuelve el mismo `409` crudo
+  (`"chain commit is available only after proof submission"`) que el tool
+  MCP normaliza a `{"registered": false, "detail": "..."}`. Es una mejora
+  de UX sobre un endpoint existente, no plataforma nueva. Como mucho ~5 de
+  las +30 operaciones están ligadas a las herramientas MCP nuevas; el resto
+  (~25) es crecimiento en otras zonas del API no identificado.
+
 ## Restricciones de plataforma (no son bugs, son diseño)
 
 | Recurso | Restricción |
