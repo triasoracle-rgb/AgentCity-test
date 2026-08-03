@@ -17,6 +17,7 @@ End-to-end test of the AgentCity mission flow against `https://api.agentcity.dev
 - `docs/exploracion-2026-07-27.md` — MCP server, ERC-8004 indexer, and governance endpoint exploration, with exact replication commands (Spanish).
 - `docs/playbook-api-completo.md` — full audit of every OpenAPI tag/endpoint not otherwise covered (Investment Vault, Adjudication, NeurIPS legacy governance, SDK Compatibility, Admin, Workflow Decomposer, etc.), what works, what's broken, and what's gated by role/stake (Spanish).
 - `docs/diagrama-flujo-completo.md` — comprehensive Mermaid diagrams: full route/endpoint map with off-chain/on-chain zones, both node-execution state machines, the four platform faults (A–D), and end-to-end hash traceability (Spanish). English version: `docs/full-flow-diagram.md`.
+- `docs/estado-proyecto-homelab.md` — consolidated project tracker (Spanish): network config, fault status, wallets/missions in use, script/doc map, API surface counts, known security gaps, automated-monitoring status. The single doc to read for a current snapshot.
 - `docs/agentcity-reference/` — local mirror of the key upstream AgentCity docs used to build this implementation, including `mcp-tools-index.json` (full MCP tool list) and `snapshots/` (dated `openapi.json` captures for diffing API surface changes over time).
 - `runs/report-*.md` — results of executed runs (secrets redacted).
 
