@@ -313,6 +313,44 @@ Comprobación de rutina (ver `docs/agentcity-reference/mcp-tools-index.json` y
   las +30 operaciones están ligadas a las herramientas MCP nuevas; el resto
   (~25) es crecimiento en otras zonas del API no identificado.
 
+## Actualización 2026-08-03 — `mission.status` se desacopla del estado on-chain real
+
+Al revisar el detalle completo de las dos misiones vigiladas (no solo los
+endpoints de acción/asentamiento, sino `GET /api/missions/{id}` entero) se
+encontró que **ambas muestran `"status": "completed"`** a nivel de
+aplicación, mientras que su estado on-chain real sigue sin cambios:
+
+| Campo | `676068cc-...` (fallo B) | `7e3919d8-...` (fallo D) |
+|---|---|---|
+| `status` (`GET /api/missions/{id}`) | `completed` | `completed` |
+| `chain_derived_status` | `in_progress` | `in_progress` |
+| `contract_status_label` (`GET .../onchain`) | `InProgress` | `InProgress` |
+| `settled_node_id` | `null` | `null` |
+| `updated_at` | 2026-07-27T05:42 | 2026-07-27T06:32 |
+
+No es un cambio reciente — ambos `updated_at` son del 27/07 (el de
+`7e3919d8` coincide, al minuto, con el momento en que sus 3 nodos NeurIPS
+se llevaron a `Completed`). Nunca se había mirado este campo concreto
+antes porque la vigilancia diaria comprueba `actions/complete/payload` y
+el journal de asentamiento directamente, no el detalle completo de la
+misión.
+
+**Interpretación**: `mission.status` parece reflejar "todo el trabajo del
+DAG ha terminado" (todos los nodos en `Completed`), un flag de aplicación
+independiente de si el contrato llegó a liquidarse en cadena.
+`contract_status_label`/`chain_derived_status` sí reflejan el estado real
+del contrato. Se confirmaron los balances on-chain de owner y team0 vía
+RPC directo — sin cambios, consistente con que no hubo liberación de
+fondos real.
+
+**Implicación práctica**: para detectar una recuperación genuina de los
+fallos B o D, `mission.status == "completed"` **no es una señal válida**
+— hay que mirar `contract_status_label` (debe dejar de ser `InProgress`)
+o `settled_node_id`/`settle_tx_hash` no nulos. La Routine automática ya
+usa el criterio correcto (`contract_status_label` distinto de
+`InProgress`, o balances cambiados); este hallazgo solo documenta por qué
+`mission.status` por sí solo puede inducir a error.
+
 ## Restricciones de plataforma (no son bugs, son diseño)
 
 | Recurso | Restricción |
