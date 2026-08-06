@@ -1,0 +1,364 @@
+================================================================================
+BRIEFING PARA CLAUDE CODE — Implementar AgentCity Mission Flow en Homelab
+================================================================================
+Generado: 2026-08-06
+Repo fuente: https://github.com/triasoracle-rgb/AgentCity-test
+Branch con todo el trabajo: claude/agentcity-mission-flow-pzij7v
+  (si ya está mergeado a main, clona main en su lugar)
+
+Este archivo es un briefing autocontenido para que una sesión de Claude
+Code en un homelab replique, mantenga y extienda esta implementación sin
+tener que redescubrir nada de lo ya investigado. Léelo entero antes de
+ejecutar nada. Todo lo que dice "ver docs/X" existe en el repo clonado.
+
+================================================================================
+0. OBJETIVO
+================================================================================
+
+Correr el ciclo de vida completo de una misión de AgentCity
+(https://api.agentcity.dev, NETX testnet, chain id 587) de forma
+automatizada: autenticación de wallets, registro on-chain de agentes,
+creación de misión, formación de equipo, deliberación, cotización,
+acuerdo EIP-712, pago de escrow, ejecución de nodos DAG, y (cuando el
+backend público lo permita) cierre económico y liquidación on-chain.
+
+El ciclo YA ESTÁ IMPLEMENTADO Y PROBADO en este repo. Tu trabajo en el
+homelab es: (a) replicarlo tal cual, (b) mantenerlo vigilando los fallos
+de plataforma conocidos, y (c) opcionalmente extenderlo (backend propio,
+nuevos casos de uso) una vez el ciclo base funcione.
+
+================================================================================
+1. REQUISITOS PREVIOS
+================================================================================
+
+- Node.js 18+ (usa `ethers` v6, fetch nativo).
+- Salida a Internet por HTTPS hacia:
+    https://api.agentcity.dev
+    https://mcp.agentcity.dev
+    https://testnetrpc.netxscan.io
+    https://agentcity.dev (docs + 8004-scan)
+- Si estás detrás de un proxy MITM (como en este entorno de desarrollo),
+  necesitas:
+    export HTTPS_PROXY=<tu-proxy>
+    export NODE_EXTRA_CA_CERTS=<ruta-al-CA-bundle-del-proxy>
+  Si tu homelab tiene salida directa a Internet, omite ambas.
+- git, npm.
+
+================================================================================
+2. CLONAR Y PREPARAR
+================================================================================
+
+    git clone https://github.com/triasoracle-rgb/AgentCity-test.git
+    cd AgentCity-test
+    git checkout claude/agentcity-mission-flow-pzij7v   # si no está en main
+    npm install
+
+================================================================================
+3. ORDEN DE LECTURA (antes de tocar código)
+================================================================================
+
+En este orden, de más resumido a más detallado:
+
+  1. docs/estado-proyecto-homelab.md
+       — Resumen ejecutivo de TODO: fallos activos, contratos, wallets
+         usadas, misiones de prueba, próximos pasos. LEE ESTO PRIMERO.
+  2. README.md
+       — Cómo correr el flujo, qué hace cada script.
+  3. .claude/skills/mission-skill/SKILL.md
+       — Especificación completa del flujo (fuente de verdad).
+  4. docs/guia-homelab.md
+       — Instalación, proxy/CA, faucet, systemd timer, seguridad.
+  5. docs/playbook-api-completo.md
+       — Auditoría completa de las 47 categorías del OpenAPI: qué
+         funciona, qué está roto, qué requiere privilegios. Contiene el
+         registro de los 5 fallos de plataforma (A-E) con todo el
+         detalle técnico.
+  6. docs/exploracion-2026-07-27.md
+       — Cómo se descubrió la máquina de estados correcta de ejecución
+         de nodos, comparando con misiones de referencia reales.
+  7. docs/diagrama-flujo-completo.md (o docs/full-flow-diagram.md en
+     inglés)
+       — Diagramas Mermaid de todo el flujo, zonas off/on-chain, ambas
+         máquinas de estado, trazabilidad de hashes.
+  8. docs/agentcity-reference/
+       — Espejo local de la documentación oficial de AgentCity
+         (skill.md, backend_skill.md, llms.txt), más
+         mcp-tools-index.json (119 tools MCP) y snapshots/ (capturas de
+         openapi.json para detectar cambios de la API con el tiempo).
+
+================================================================================
+4. VARIABLES DE ENTORNO
+================================================================================
+
+    AGENTCITY_API_URL   default https://api.agentcity.dev
+    AGENTCITY_MCP_URL   default https://mcp.agentcity.dev
+    NETX_RPC_URL        default https://testnetrpc.netxscan.io
+    STATE_FILE          default runs/state.json (contiene claves privadas
+                         y tokens generados — NUNCA lo comitees; ya está
+                         en .gitignore)
+    HTTPS_PROXY         solo si aplica en tu red
+    NODE_EXTRA_CA_CERTS solo si aplica (proxy MITM)
+
+================================================================================
+5. EJECUCIÓN — ORDEN RECOMENDADO
+================================================================================
+
+  1) Flujo completo de misión (genera wallets nuevas si runs/state.json
+     no existe, o continúa desde donde se quedó si existe):
+
+       node scripts/agent-city/mission-flow.mjs
+
+     Cubre: auth, registro on-chain, constitución, misión, equipo,
+     deliberación, cotización, agreement, pago de escrow, apertura de
+     colaboración. La sección 10 (completar/liberar/calificar) es
+     best-effort y hoy falla por el Fallo B (ver §7) — no es un bug tuyo.
+
+  2) Llevar los nodos DAG a completado (usa el sistema que SÍ liquida
+     misiones reales, ver §6):
+
+       node scripts/agent-city/neurips-node-runner.mjs <missionId>
+
+  3) Trazabilidad on-chain completa de todas las wallets usadas:
+
+       node scripts/agent-city/trace-all.mjs runs/state.json \
+         runs/trazabilidad-completa-$(date +%F).md
+
+  4) Exportar wallets a formato MetaMask si quieres importarlas
+     visualmente (nunca subas el resultado a git; ya cae en
+     runs/keystore/, gitignored):
+
+       node scripts/agent-city/export-keys.mjs --roles owner,provider,team0
+
+  5) (Diagnóstico opcional) Flujo mínimo de 2 agentes sin equipo, para
+     aislar si un fallo es de plataforma o específico del flujo de
+     equipo:
+
+       node scripts/agent-city/simple-mission-flow.mjs
+
+  6) (Solo si vas a investigar el sistema de colaboración vía MCP tools,
+     que es un callejón sin salida para liquidar misiones — ver §6):
+
+       node scripts/agent-city/collab-node-runner.mjs <missionId> \
+         <contractId> <nodeId1,nodeId2,...>
+
+================================================================================
+6. LOS DOS SISTEMAS DE EJECUCIÓN DE NODOS — USA EL CORRECTO
+================================================================================
+
+AgentCity tiene DOS sistemas paralelos para ejecutar los nodos del DAG de
+una misión. Son fáciles de confundir; usa el correcto desde el principio:
+
+  SISTEMA A — Collaboration (/api/collaboration/* + MCP tools
+  bind_node_service/route_node_task/etc., scripts/agent-city/
+  collab-node-runner.mjs): NINGUNA misión completada revisada en la
+  testnet compartida lo usa. Es un callejón sin salida a día de hoy
+  (bloqueado por el Fallo D, ver §7).
+
+  SISTEMA B — NeurIPS-nativo (/api/neurips/nodes/{live_node_id}/*,
+  scripts/agent-city/neurips-node-runner.mjs): este es el que SÍ usan
+  las misiones que llegan a liquidarse on-chain de verdad. Cada nodo del
+  workflow de la propuesta ganadora tiene un campo `live_node_id`
+  (GET /api/teams/mission/{missionId}/proposals →
+  workflow.nodes[].live_node_id) que mapea a este sistema.
+
+  Máquina de estados (estricta, cada paso 409 si te lo saltas):
+    Idle → route → Invoked → commit{output_hash} → Committed → guard
+    → Guarding → verifying → Verifying → verify/tier1 (side-effect)
+    → gated → Gated → record → Recording → complete → Completed
+
+  USA SIEMPRE EL SISTEMA B (neurips-node-runner.mjs) salvo que estés
+  investigando específicamente el sistema A por curiosidad.
+
+================================================================================
+7. FALLOS DE PLATAFORMA CONOCIDOS — NO LOS REDESCUBRAS
+================================================================================
+
+Estado a 2026-08-06. Antes de "arreglar" algo, comprueba aquí si ya es un
+fallo de backend catalogado (no del cliente). Detalle técnico completo en
+docs/playbook-api-completo.md.
+
+  FALLO A — chain-service de signing-payload/eip712-payload (agreement).
+    Síntoma: 500 INTERNAL_ERROR.
+    Estado: RECUPERADO 2026-07-26 (~8 días caído). No debería reaparecer,
+    pero si ves 500 aquí de nuevo, es un fallo de plataforma, no tuyo.
+
+  FALLO B — actions/{complete,release}/payload y rate/payload.
+    Síntoma: 500 INTERNAL_ERROR en TODO tipo de misión (confirmado con
+    equipo y con misión simple de 2 agentes).
+    Estado: ROTO, activo desde 2026-07-18. Compruébalo así:
+      curl -X POST -H "Authorization: Bearer $TOKEN" \
+        -d '{}' https://api.agentcity.dev/api/missions/{id}/actions/complete/payload
+      200 = recuperado. 500 = sigue roto.
+
+  FALLO C — Investment Vault: vault/create/payload, vault/mock-setup.
+    Síntoma: 502 crudo / 500 INTERNAL_ERROR. La creación de misión con
+    investment_config SÍ funciona; solo falla instanciar el vault.
+    Estado: ROTO desde 2026-07-27.
+
+  FALLO D — governance chain_node_id nunca se asigna a los nodos del DAG.
+    Bloquea tanto finalize_node (sistema A) como el worker de
+    asentamiento automático (sistema B):
+      GET /api/dev/settlement/{missionId}/journal
+      → "step":"binding_wait",
+        "last_error":"waiting for settlement mission binding:
+         governance chain_node_id is missing"
+    Estado: INTERMITENTE. El worker reintenta solo cada ~10s — cuando se
+    recupera, la liquidación ocurre SIN que relances nada manualmente.
+    No es necesario ni deseable "arreglarlo" tú mismo; solo espera/vigila.
+
+  FALLO E — Bootstrap de actores del Hosted Demo.
+    Se dispara con la tool MCP start_investor_demo({requestId}) —sin
+    wallet ni token, ver §9—. Falla en la fase actors_ready:
+      {"code":"HOSTED_SMOKE_FAILED","message":"Smoke exited code=1 signal=none"}
+    A diferencia de B/D, retryable:false — no se autorepara, pide
+    operator_review.
+    Estado: INTERMITENTE, descubierto 2026-08-06.
+
+  IMPORTANTE: cuando cualquiera de estos se recupere, NO necesitas
+  relanzar nada complejo — para B: relanza mission-flow.mjs (su sección
+  10 hará complete/release/rate). Para D: no hagas nada, el worker
+  liquida solo. Regenera la trazabilidad (§5.3) y actualiza
+  docs/estado-proyecto-homelab.md cuando confirmes un cambio real de
+  contract_status_label (¡OJO, ver aviso siguiente!).
+
+  TRAMPA CONOCIDA: `mission.status` (GET /api/missions/{id}) puede decir
+  "completed" SIN que haya liquidación real. Eso solo significa que
+  todos los nodos del DAG terminaron su trabajo, no que el contrato se
+  resolvió on-chain. La señal fiable es SIEMPRE:
+      GET /api/missions/{id}/onchain → contract_status_label
+      (debe dejar de ser "InProgress", pasar a "Resolved"/"Completed")
+  o settled_node_id / settle_tx_hash no nulos. Detalle en
+  docs/playbook-api-completo.md § "Actualización 2026-08-03".
+
+================================================================================
+8. RED, CONTRATOS Y REFERENCIA RÁPIDA
+================================================================================
+
+  Chain ID:        587 (NETX testnet)
+  RPC:              https://testnetrpc.netxscan.io
+  Explorer:         https://testnet.netxscan.io
+  Moneda nativa:    tNETX (18 decimales, gas y pago son el mismo activo)
+  API:              https://api.agentcity.dev
+  MCP:              https://mcp.agentcity.dev (119 tools; usar
+                     Accept: application/json, text/event-stream)
+  OpenAPI:          https://api.agentcity.dev/openapi.json (469 ops,
+                     47 tags a 2026-07-28 — compara contra
+                     docs/agentcity-reference/snapshots/openapi-2026-07-28.json
+                     para ver qué cambió, con el script en
+                     docs/agentcity-reference/README.md)
+
+  Contratos (vía GET /api/config, reconfirma en vivo si dudas):
+    MissionFactory        0xEf215Dd0e57959424Ab6f90D7B57C90A4e44A828
+    StakingRegistry        0x6F8E4696578447686c8F20270C117ccC46B4f35A
+    AgentRegistry           0x2ba3C3b8aa9AFceFF6501E979d2c62566Ee20902
+    ReputationRegistry       0x450Baee675f7c518755F68FFFCEb0C01e3dACAF6
+    GovernanceRegistry        0x02Fa505012D29c1405EF3592d78f1D9bE9f9bf49
+    SanctionRegistry            0x71D916F5aA56eff03128FE5E9c9E662B224186F0
+    EvidenceAnchor                0x55930E18EaA8cDD8a6471FB46E526f2546D49323
+    InvestmentVaultFactory          0xC7c7d069Ae1bc48F5B7B715BE0B0016BD70ba6da
+    Relayer (paga createMission automáticamente):
+                                     0x84d995ee26754F62B26699F43d945399f6048BdC
+
+  Faucet: /api/dev/faucet suele estar caído; usa /api/faucet/native
+  (0.1 tNETX por llamada, repetible).
+
+  Multi-chain: el backend está fijado a chainId 587. Base (8453) NO está
+  soportado por el marketplace de misiones (solo aparece como ejemplo
+  genérico "ERC-20 chain" en el SDK y como red indexada aparte por
+  8004-Scan). No pierdas tiempo intentando apuntar a otra chain contra
+  este backend.
+
+================================================================================
+9. ATAJO SIN WALLET: HOSTED DEMO (ver Fallo E)
+================================================================================
+
+Si solo quieres ver el ciclo completo funcionando sin generar wallets ni
+gestionar claves, existe un demo oficial público, disparable sin
+autenticación vía MCP:
+
+    tools/call start_investor_demo {"requestId": "<id-estable-8-100-chars>"}
+    tools/call get_investor_demo_status {"runId": "<uuid-devuelto>"}
+    tools/call audit_investor_demo {"runId": "<uuid>"}   (solo si tuvo éxito)
+
+Hoy (2026-08-06) falla con HOSTED_SMOKE_FAILED (Fallo E, §7) — no es
+culpa tuya si te pasa lo mismo. Cuando funcione, `audit_investor_demo`
+devuelve evidencia completa (propuestas, tx reales, `mission status 5`,
+payout) sin secretos.
+
+================================================================================
+10. AUTOMATIZACIÓN / VIGILANCIA DIARIA
+================================================================================
+
+En este entorno de desarrollo se usó una Routine programada (cron
+`13 9 * * *`) que revisa los Fallos B y D cada día y auto-completa la
+misión en cuanto alguno se recupera (ver prompt exacto y lógica completa
+en el historial de commits / docs/estado-proyecto-homelab.md §12). En tu
+homelab, replica esto con un systemd timer o cron job — ejemplo completo
+en docs/guia-homelab.md § "systemd timer".
+
+Lógica mínima que debe tener el chequeo diario:
+  1. curl a actions/complete/payload de una misión de prueba tuya →
+     200 = Fallo B recuperado.
+  2. curl a /api/dev/settlement/{missionId}/journal de una misión con
+     nodos ya en Completed → step:"settle_submitted" = Fallo D
+     recuperado.
+  3. Si ambos siguen fallando: no hacer nada, salir en silencio.
+  4. Si alguno se recupera: reautenticar wallets (tokens caducan),
+     relanzar el script correspondiente, regenerar trazabilidad,
+     comitear.
+
+================================================================================
+11. QUÉ NO INTENTAR "ARREGLAR" (SON FALLOS DE BACKEND, NO TUYOS)
+================================================================================
+
+  - No intentes parchear/reintentar infinitamente actions/complete
+    (Fallo B) — es 500 del servidor, no hay nada que el cliente pueda
+    hacer distinto.
+  - No intentes registrar tú mismo un chain_node_id — no existe ningún
+    endpoint/tool que lo permita; es un worker interno de AgentCity.
+  - No confundas mission.status:"completed" con liquidación real (ver
+    trampa en §7).
+  - No asumas que el sistema de colaboración (§6, Sistema A) es un bug
+    tuyo si se queda atascado en "executing" — es una trampa conocida de
+    la plataforma si llamas route_node_task antes de cerrar la puja
+    (close_node_bidding force=true SIEMPRE antes de route_node_task).
+  - No gastes tiempo en Investment Vault (Fallo C), gobernanza NeurIPS
+    completa (requiere rol admin + 5000 de stake) ni SDK Compatibility
+    (requiere secreto HMAC del despliegue) contra el backend público —
+    solo son viables con tu propio backend (§12).
+
+================================================================================
+12. PARA IR MÁS ALLÁ: BACKEND PROPIO
+================================================================================
+
+Si quieres una implementación "completa" sin las restricciones del
+despliegue público compartido (rol admin, stake mínimo de adjudicador,
+secretos HMAC, Investment Vault roto), despliega tu propia instancia del
+backend de AgentCity. El repo está referenciado en
+docs/agentcity-reference/llms.txt (busca el enlace al repo del backend/
+frontend). Con tu propio despliegue desaparecen las restricciones de
+plataforma compartida — pero entonces los "Fallos A-E" de este documento
+ya no aplican (serán tus propios bugs a depurar, no los del despliegue
+público).
+
+================================================================================
+13. CHECKLIST DE VERIFICACIÓN RÁPIDA
+================================================================================
+
+  [ ] npm install sin errores
+  [ ] node scripts/agent-city/mission-flow.mjs corre hasta "apertura de
+      colaboración" sin abortar (puede fallar solo en la sección 10,
+      eso es esperado por el Fallo B)
+  [ ] runs/state.json se generó con wallets + tokens
+  [ ] node scripts/agent-city/neurips-node-runner.mjs <missionId> lleva
+      los 3 nodos a "Completed"
+  [ ] node scripts/agent-city/trace-all.mjs genera el informe de
+      trazabilidad sin errores
+  [ ] Confirmaste el estado de los Fallos B/D/E contra el backend en
+      vivo (no asumas que siguen igual que en este documento — vuelve a
+      comprobar, las fechas de arriba son del 2026-08-06)
+
+================================================================================
+FIN DEL BRIEFING — para cualquier duda, el detalle completo está en los
+documentos listados en la sección 3, todos dentro del repo clonado.
+================================================================================
