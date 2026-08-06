@@ -223,6 +223,7 @@ Escritura bloqueada por dos motivos distintos, ambos de **diseño**, no bugs:
 | B | Constructor de payloads de `actions/{complete,release}` y `rate/payload` | 500 `INTERNAL_ERROR` en TODO tipo de misión (confirmado con misión de equipo y misión simple de 2 agentes) | **Roto**, sigue vigilado por la Routine automática |
 | C | Creación de bóveda de inversión (`vault/create/payload`, `vault/mock-setup`) | 502 / 500 `INTERNAL_ERROR` | **Roto**, descubierto el 27/07, sin vigilancia automática todavía |
 | D | Asignación de `governance chain_node_id` a los nodos del DAG | Bloquea tanto `prepare_node_chain_commit` (`409 collaboration chain node is not registered yet`) como el worker de asentamiento automático (`GET /api/dev/settlement/{id}/journal` → `"step":"binding_wait"`, `"last_error":"waiting for settlement mission binding: governance chain_node_id is missing"`) | **Roto pero intermitente**: una misión de referencia real (`72ae8b85-...`) completó este mismo paso con éxito el 26/07 entre las 06:58–07:00 UTC — ver `docs/exploracion-2026-07-27.md` §2 |
+| E | Bootstrap de actores del Hosted Demo (`start_investor_demo` / `POST /api/demo/runs`) | Falla en la fase `actors_ready` con `{"code":"HOSTED_SMOKE_FAILED","message":"Smoke exited code=1 signal=none"}`, `retryable: false` — a diferencia de B/D, ni el propio backend reintenta solo (`next_actions: operator_review`) | **Roto pero intermitente**: descubierto el 06/08; la misión de referencia #2 (`4aa85111-...`) completó por esta misma ruta el día anterior (05/08) sin problema — ver "Actualización 2026-08-06" abajo |
 
 **Causa raíz unificada del fallo D**: existen **dos sistemas de ejecución de
 nodos DAG en paralelo** — el de colaboración (`/api/collaboration/*` +
@@ -378,6 +379,55 @@ asignación on-chain.
 frontend pobladas con datos reales — sirve de plantilla para mapear cada
 sección a su endpoint (detalle completo, con la tabla sección↔endpoint,
 en `docs/exploracion-2026-07-27.md` §"Cuarta actualización").
+
+## Actualización 2026-08-06 — el Hosted Demo SÍ es replicable, pero hoy está roto (fallo E)
+
+Investigación de si el hosted demo (§ arriba) es disparable por cualquiera,
+no solo observable. **Respuesta: sí, completamente.** Tres tools MCP
+dedicadas, sin autenticación de ningún tipo:
+
+- `start_investor_demo({requestId})` — arranca un run. Descripción textual
+  de la herramienta: *"the calling agent needs no repository, wallet,
+  bearer token, or local script"*.
+- `get_investor_demo_status({runId})` — sondea el estado.
+- `audit_investor_demo({runId})` — evidencia final "libre de secretos"
+  (propuestas ganadora/perdedora, transacciones NETX reales, asentamiento
+  de nodos, `mission status 5`, payout) para runs exitosos.
+
+Backend REST equivalente (mismo dato, sin pasar por MCP):
+`POST /api/demo/runs` (requiere header `X-Hosted-Demo-Token` que el MCP
+server posee internamente — por eso la vía MCP es la única abierta al
+público), `GET /api/demo/runs/{run_id}`, `GET
+/api/demo/runs/{run_id}/evidence`. Un cuarto endpoint,
+`POST /api/demo/runs/{run_id}/runner-callback`, requiere
+`X-Demo-Runner-Token` — es el callback que usa el runner interno de
+AgentCity para reportar progreso; confirma que la ejecución real de las
+3 etapas (analyze/transform/validate) corre en infraestructura propia de
+AgentCity, no en el cliente.
+
+**Probado en vivo** (`requestId: homelab-probe-1785997051`): el run se
+creó correctamente (`run_id: 2992b277-9dca-4a98-9837-ed921ce6a8f8`,
+`status: "queued"` → `"running"`), pero falló en ~14s en la fase
+`actors_ready`:
+
+```json
+{"error":{"code":"HOSTED_SMOKE_FAILED","message":"Smoke exited code=1 signal=none"}}
+```
+
+`retryable: false`, `next_actions: [{"action":"operator_review"}]` — a
+diferencia de los fallos B y D, aquí **ni el propio backend se reintenta
+solo**; requiere intervención manual del operador de la plataforma. Es un
+**quinto fallo de plataforma (E)**: el script de bootstrap ("smoke") que
+provisiona los actores cacheados del demo está roto. Intermitente, no
+permanente — la misión de referencia #2 (`4aa85111-...`) completó por
+esta misma ruta el día anterior sin problema.
+
+**Conclusión sobre replicabilidad**: el mecanismo es genuinamente público
+y sin fricción (ideal para un homelab — cero setup, cero wallet), pero
+hoy no es utilizable porque el bootstrap interno de actores está caído.
+No se ha añadido a la Routine automática (que solo vigila B y D); si se
+quiere vigilar también E, sería una tercera comprobación diaria con
+`start_investor_demo` + poll.
 
 ## Restricciones de plataforma (no son bugs, son diseño)
 

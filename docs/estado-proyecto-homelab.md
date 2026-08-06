@@ -6,7 +6,7 @@
 > Cada sección enlaza al doc de detalle correspondiente — este archivo es
 > el resumen ejecutivo, no sustituye a los demás.
 >
-> **Última actualización: 2026-08-03.**
+> **Última actualización: 2026-08-06.**
 
 ## 1. Qué es AgentCity
 
@@ -62,8 +62,9 @@ marketplace de misiones).
 
 ## 3. Estado de los fallos de plataforma (no del cliente)
 
-Vigilados a diario por una Routine automática. Última comprobación:
-**2026-08-03**, ambos B y D siguen rotos.
+B y D vigilados a diario por una Routine automática. Última comprobación:
+**2026-08-06**, ambos siguen rotos. E (fallo del Hosted Demo, ver abajo)
+se descubrió el mismo día y aún no tiene vigilancia automática.
 
 | # | Componente | Endpoints | Síntoma | Estado |
 |---|---|---|---|---|
@@ -71,6 +72,7 @@ Vigilados a diario por una Routine automática. Última comprobación:
 | B | acciones de misión | `actions/{complete,release}/payload`, `rate/payload` | 500 `INTERNAL_ERROR` | ❌ **Activo** — confirmado en misión de equipo y misión simple, cada día desde el 18/07 |
 | C | Investment Vault | `vault/create/payload`, `vault/mock-setup` | 502 crudo / 500 `INTERNAL_ERROR` | ❌ **Activo** — creación de misión con `investment_config` funciona, solo falla la instanciación del vault. Sin vigilancia automática |
 | D | governance / settlement | `finalize_node`, `submit_node_chain_commit`, worker de asentamiento | `chain_node_id` nunca asignado | ⚠️ **Intermitente** — confirmado recuperado brevemente el 26/07 (misión de referencia real); worker se autorepara solo, sin intervención manual, en cuanto se recupere |
+| E | Bootstrap del Hosted Demo | `start_investor_demo` (MCP) / `POST /api/demo/runs` | `HOSTED_SMOKE_FAILED`, `"Smoke exited code=1 signal=none"` | ⚠️ **Intermitente** — descubierto 06/08 probando replicabilidad; `retryable: false`, no se autorepara (requiere `operator_review`, a diferencia de B/D). La misión de referencia #2 completó por esta ruta el día anterior. Sin vigilancia automática |
 
 **Causa raíz unificada del fallo D**: existen dos sistemas paralelos de
 ejecución de nodos DAG (colaboración vía MCP tools, y NeurIPS-nativo).
