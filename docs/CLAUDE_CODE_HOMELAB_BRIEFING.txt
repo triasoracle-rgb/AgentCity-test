@@ -6,10 +6,33 @@ Repo fuente: https://github.com/triasoracle-rgb/AgentCity-test
 Branch con todo el trabajo: claude/agentcity-mission-flow-pzij7v
   (si ya está mergeado a main, clona main en su lugar)
 
-Este archivo es un briefing autocontenido para que una sesión de Claude
-Code en un homelab replique, mantenga y extienda esta implementación sin
-tener que redescubrir nada de lo ya investigado. Léelo entero antes de
-ejecutar nada. Todo lo que dice "ver docs/X" existe en el repo clonado.
+Este archivo es AUTOCONTENIDO: no necesitas abrir ningún otro documento
+del repo para entender qué hacer, por qué, y qué está roto. Léelo entero
+antes de ejecutar nada. Todo lo verificado aquí se probó en vivo contra
+el despliegue público de AgentCity durante julio-agosto de 2026.
+
+ÍNDICE
+  0. Objetivo
+  1. Requisitos previos
+  2. Instalación
+  3. Variables de entorno
+  4. Red, contratos y referencia rápida
+  5. Flujo completo de misión — endpoint por endpoint, con payloads
+  6. Los dos sistemas de ejecución de nodos DAG (máquinas de estado completas)
+  7. Los 5 fallos de plataforma conocidos (A-E) — detalle técnico completo
+  8. La trampa mission.status vs contract_status_label
+  9. Misiones de referencia reales (completadas de verdad)
+ 10. Hosted Demo — atajo público sin wallet (MCP)
+ 11. Wallets de prueba ya generadas (direcciones públicas)
+ 12. Otros subsistemas explorados (gobernanza, adjudicación, vault, etc.)
+ 13. Superficie de API y herramientas MCP (conteos, cómo diffear cambios)
+ 14. Gaps de seguridad admitidos por la plataforma (sin TEE)
+ 15. Scripts del repo
+ 16. Automatización / vigilancia diaria
+ 17. Problemas conocidos y solución (troubleshooting)
+ 18. Qué NO intentar "arreglar"
+ 19. Para ir más allá: backend propio
+ 20. Checklist de verificación final
 
 ================================================================================
 0. OBJETIVO
@@ -22,30 +45,48 @@ creación de misión, formación de equipo, deliberación, cotización,
 acuerdo EIP-712, pago de escrow, ejecución de nodos DAG, y (cuando el
 backend público lo permita) cierre económico y liquidación on-chain.
 
-El ciclo YA ESTÁ IMPLEMENTADO Y PROBADO en este repo. Tu trabajo en el
-homelab es: (a) replicarlo tal cual, (b) mantenerlo vigilando los fallos
-de plataforma conocidos, y (c) opcionalmente extenderlo (backend propio,
-nuevos casos de uso) una vez el ciclo base funcione.
+AgentCity es un marketplace descentralizado donde humanos publican
+"misiones" y agentes delegados on-chain cotizan, colaboran en equipo y
+liquidan el trabajo vía escrow en NETX testnet. Identidad y reputación
+combinan registros propios (AgentRegistry, ReputationRegistry) con los
+registros canónicos ERC-8004 (Identity/Reputation/Validation).
+Gobernanza constitucional (deliberación, votación, sanciones) controla
+qué misiones se aprueban y cómo se resuelven disputas.
+
+El ciclo YA ESTÁ IMPLEMENTADO Y PROBADO en el repo de origen. Tu trabajo
+en el homelab es: (a) replicarlo tal cual, (b) mantenerlo vigilando los
+fallos de plataforma conocidos (sección 7), y (c) opcionalmente
+extenderlo (backend propio, nuevos casos de uso) una vez el ciclo base
+funcione.
 
 ================================================================================
 1. REQUISITOS PREVIOS
 ================================================================================
 
-- Node.js 18+ (usa `ethers` v6, fetch nativo).
-- Salida a Internet por HTTPS hacia:
-    https://api.agentcity.dev
-    https://mcp.agentcity.dev
-    https://testnetrpc.netxscan.io
-    https://agentcity.dev (docs + 8004-scan)
-- Si estás detrás de un proxy MITM (como en este entorno de desarrollo),
-  necesitas:
-    export HTTPS_PROXY=<tu-proxy>
-    export NODE_EXTRA_CA_CERTS=<ruta-al-CA-bundle-del-proxy>
-  Si tu homelab tiene salida directa a Internet, omite ambas.
-- git, npm.
+  Componente   | Mínimo                              | Notas
+  -------------|--------------------------------------|----------------------
+  SO           | Linux/macOS (o Windows + WSL2)        | Probado en Linux
+  Node.js      | 22.x                                   | fetch nativo incluido
+  Git          | cualquiera                             | Para clonar el repo
+  Red          | HTTPS saliente a api.agentcity.dev,    | No hace falta abrir
+               | mcp.agentcity.dev, testnetrpc.netxscan.| puertos entrantes
+               | io, agentcity.dev                      |
+  Disco/RAM    | < 200 MB, < 256 MB RAM                | Cliente HTTP + firmas
+               |                                        | locales, nada más
+
+No necesitas nodo blockchain propio: las transacciones se envían al RPC
+público de la testnet NETX. No necesitas fondos reales: todo es tNETX de
+faucet, sin valor monetario real.
+
+Si tu homelab sale por un proxy que hace inspección TLS (MITM):
+
+    export HTTPS_PROXY=http://<tu-proxy>:<puerto>
+    export NODE_EXTRA_CA_CERTS=/ruta/al/CA-bundle-del-proxy.crt
+
+Si tienes salida directa a Internet, omite ambas variables.
 
 ================================================================================
-2. CLONAR Y PREPARAR
+2. INSTALACIÓN
 ================================================================================
 
     git clone https://github.com/triasoracle-rgb/AgentCity-test.git
@@ -53,312 +94,1156 @@ nuevos casos de uso) una vez el ciclo base funcione.
     git checkout claude/agentcity-mission-flow-pzij7v   # si no está en main
     npm install
 
-================================================================================
-3. ORDEN DE LECTURA (antes de tocar código)
-================================================================================
+Docker (opcional):
 
-En este orden, de más resumido a más detallado:
+    docker run --rm -it -v "$PWD":/app -w /app node:22 bash -c \
+      "npm install && node scripts/agent-city/mission-flow.mjs"
 
-  1. docs/estado-proyecto-homelab.md
-       — Resumen ejecutivo de TODO: fallos activos, contratos, wallets
-         usadas, misiones de prueba, próximos pasos. LEE ESTO PRIMERO.
-  2. README.md
-       — Cómo correr el flujo, qué hace cada script.
-  3. .claude/skills/mission-skill/SKILL.md
-       — Especificación completa del flujo (fuente de verdad).
-  4. docs/guia-homelab.md
-       — Instalación, proxy/CA, faucet, systemd timer, seguridad.
-  5. docs/playbook-api-completo.md
-       — Auditoría completa de las 47 categorías del OpenAPI: qué
-         funciona, qué está roto, qué requiere privilegios. Contiene el
-         registro de los 5 fallos de plataforma (A-E) con todo el
-         detalle técnico.
-  6. docs/exploracion-2026-07-27.md
-       — Cómo se descubrió la máquina de estados correcta de ejecución
-         de nodos, comparando con misiones de referencia reales.
-  7. docs/diagrama-flujo-completo.md (o docs/full-flow-diagram.md en
-     inglés)
-       — Diagramas Mermaid de todo el flujo, zonas off/on-chain, ambas
-         máquinas de estado, trazabilidad de hashes.
-  8. docs/agentcity-reference/
-       — Espejo local de la documentación oficial de AgentCity
-         (skill.md, backend_skill.md, llms.txt), más
-         mcp-tools-index.json (119 tools MCP) y snapshots/ (capturas de
-         openapi.json para detectar cambios de la API con el tiempo).
+Monta el directorio del repo para que `runs/state.json` (el estado
+reanudable) persista entre ejecuciones.
 
 ================================================================================
-4. VARIABLES DE ENTORNO
+3. VARIABLES DE ENTORNO
 ================================================================================
 
-    AGENTCITY_API_URL   default https://api.agentcity.dev
-    AGENTCITY_MCP_URL   default https://mcp.agentcity.dev
-    NETX_RPC_URL        default https://testnetrpc.netxscan.io
-    STATE_FILE          default runs/state.json (contiene claves privadas
-                         y tokens generados — NUNCA lo comitees; ya está
-                         en .gitignore)
-    HTTPS_PROXY         solo si aplica en tu red
-    NODE_EXTRA_CA_CERTS solo si aplica (proxy MITM)
+  Variable             | Por defecto                      | Uso
+  ---------------------|-----------------------------------|-------------------
+  AGENTCITY_API_URL    | https://api.agentcity.dev          | URL base API
+  AGENTCITY_MCP_URL    | https://mcp.agentcity.dev           | Servidor MCP
+  NETX_RPC_URL         | https://testnetrpc.netxscan.io       | JSON-RPC testnet
+  STATE_FILE           | runs/state.json                       | Estado del flujo
+                        | (contiene claves privadas y tokens —  | (NUNCA a git;
+                        | ya en .gitignore)                     | ya lo está)
+  HTTPS_PROXY          | –                                       | Si aplica
+  NODE_EXTRA_CA_CERTS  | –                                        | Si aplica (MITM)
 
 ================================================================================
-5. EJECUCIÓN — ORDEN RECOMENDADO
-================================================================================
-
-  1) Flujo completo de misión (genera wallets nuevas si runs/state.json
-     no existe, o continúa desde donde se quedó si existe):
-
-       node scripts/agent-city/mission-flow.mjs
-
-     Cubre: auth, registro on-chain, constitución, misión, equipo,
-     deliberación, cotización, agreement, pago de escrow, apertura de
-     colaboración. La sección 10 (completar/liberar/calificar) es
-     best-effort y hoy falla por el Fallo B (ver §7) — no es un bug tuyo.
-
-  2) Llevar los nodos DAG a completado (usa el sistema que SÍ liquida
-     misiones reales, ver §6):
-
-       node scripts/agent-city/neurips-node-runner.mjs <missionId>
-
-  3) Trazabilidad on-chain completa de todas las wallets usadas:
-
-       node scripts/agent-city/trace-all.mjs runs/state.json \
-         runs/trazabilidad-completa-$(date +%F).md
-
-  4) Exportar wallets a formato MetaMask si quieres importarlas
-     visualmente (nunca subas el resultado a git; ya cae en
-     runs/keystore/, gitignored):
-
-       node scripts/agent-city/export-keys.mjs --roles owner,provider,team0
-
-  5) (Diagnóstico opcional) Flujo mínimo de 2 agentes sin equipo, para
-     aislar si un fallo es de plataforma o específico del flujo de
-     equipo:
-
-       node scripts/agent-city/simple-mission-flow.mjs
-
-  6) (Solo si vas a investigar el sistema de colaboración vía MCP tools,
-     que es un callejón sin salida para liquidar misiones — ver §6):
-
-       node scripts/agent-city/collab-node-runner.mjs <missionId> \
-         <contractId> <nodeId1,nodeId2,...>
-
-================================================================================
-6. LOS DOS SISTEMAS DE EJECUCIÓN DE NODOS — USA EL CORRECTO
-================================================================================
-
-AgentCity tiene DOS sistemas paralelos para ejecutar los nodos del DAG de
-una misión. Son fáciles de confundir; usa el correcto desde el principio:
-
-  SISTEMA A — Collaboration (/api/collaboration/* + MCP tools
-  bind_node_service/route_node_task/etc., scripts/agent-city/
-  collab-node-runner.mjs): NINGUNA misión completada revisada en la
-  testnet compartida lo usa. Es un callejón sin salida a día de hoy
-  (bloqueado por el Fallo D, ver §7).
-
-  SISTEMA B — NeurIPS-nativo (/api/neurips/nodes/{live_node_id}/*,
-  scripts/agent-city/neurips-node-runner.mjs): este es el que SÍ usan
-  las misiones que llegan a liquidarse on-chain de verdad. Cada nodo del
-  workflow de la propuesta ganadora tiene un campo `live_node_id`
-  (GET /api/teams/mission/{missionId}/proposals →
-  workflow.nodes[].live_node_id) que mapea a este sistema.
-
-  Máquina de estados (estricta, cada paso 409 si te lo saltas):
-    Idle → route → Invoked → commit{output_hash} → Committed → guard
-    → Guarding → verifying → Verifying → verify/tier1 (side-effect)
-    → gated → Gated → record → Recording → complete → Completed
-
-  USA SIEMPRE EL SISTEMA B (neurips-node-runner.mjs) salvo que estés
-  investigando específicamente el sistema A por curiosidad.
-
-================================================================================
-7. FALLOS DE PLATAFORMA CONOCIDOS — NO LOS REDESCUBRAS
-================================================================================
-
-Estado a 2026-08-06. Antes de "arreglar" algo, comprueba aquí si ya es un
-fallo de backend catalogado (no del cliente). Detalle técnico completo en
-docs/playbook-api-completo.md.
-
-  FALLO A — chain-service de signing-payload/eip712-payload (agreement).
-    Síntoma: 500 INTERNAL_ERROR.
-    Estado: RECUPERADO 2026-07-26 (~8 días caído). No debería reaparecer,
-    pero si ves 500 aquí de nuevo, es un fallo de plataforma, no tuyo.
-
-  FALLO B — actions/{complete,release}/payload y rate/payload.
-    Síntoma: 500 INTERNAL_ERROR en TODO tipo de misión (confirmado con
-    equipo y con misión simple de 2 agentes).
-    Estado: ROTO, activo desde 2026-07-18. Compruébalo así:
-      curl -X POST -H "Authorization: Bearer $TOKEN" \
-        -d '{}' https://api.agentcity.dev/api/missions/{id}/actions/complete/payload
-      200 = recuperado. 500 = sigue roto.
-
-  FALLO C — Investment Vault: vault/create/payload, vault/mock-setup.
-    Síntoma: 502 crudo / 500 INTERNAL_ERROR. La creación de misión con
-    investment_config SÍ funciona; solo falla instanciar el vault.
-    Estado: ROTO desde 2026-07-27.
-
-  FALLO D — governance chain_node_id nunca se asigna a los nodos del DAG.
-    Bloquea tanto finalize_node (sistema A) como el worker de
-    asentamiento automático (sistema B):
-      GET /api/dev/settlement/{missionId}/journal
-      → "step":"binding_wait",
-        "last_error":"waiting for settlement mission binding:
-         governance chain_node_id is missing"
-    Estado: INTERMITENTE. El worker reintenta solo cada ~10s — cuando se
-    recupera, la liquidación ocurre SIN que relances nada manualmente.
-    No es necesario ni deseable "arreglarlo" tú mismo; solo espera/vigila.
-
-  FALLO E — Bootstrap de actores del Hosted Demo.
-    Se dispara con la tool MCP start_investor_demo({requestId}) —sin
-    wallet ni token, ver §9—. Falla en la fase actors_ready:
-      {"code":"HOSTED_SMOKE_FAILED","message":"Smoke exited code=1 signal=none"}
-    A diferencia de B/D, retryable:false — no se autorepara, pide
-    operator_review.
-    Estado: INTERMITENTE, descubierto 2026-08-06.
-
-  IMPORTANTE: cuando cualquiera de estos se recupere, NO necesitas
-  relanzar nada complejo — para B: relanza mission-flow.mjs (su sección
-  10 hará complete/release/rate). Para D: no hagas nada, el worker
-  liquida solo. Regenera la trazabilidad (§5.3) y actualiza
-  docs/estado-proyecto-homelab.md cuando confirmes un cambio real de
-  contract_status_label (¡OJO, ver aviso siguiente!).
-
-  TRAMPA CONOCIDA: `mission.status` (GET /api/missions/{id}) puede decir
-  "completed" SIN que haya liquidación real. Eso solo significa que
-  todos los nodos del DAG terminaron su trabajo, no que el contrato se
-  resolvió on-chain. La señal fiable es SIEMPRE:
-      GET /api/missions/{id}/onchain → contract_status_label
-      (debe dejar de ser "InProgress", pasar a "Resolved"/"Completed")
-  o settled_node_id / settle_tx_hash no nulos. Detalle en
-  docs/playbook-api-completo.md § "Actualización 2026-08-03".
-
-================================================================================
-8. RED, CONTRATOS Y REFERENCIA RÁPIDA
+4. RED, CONTRATOS Y REFERENCIA RÁPIDA
 ================================================================================
 
   Chain ID:        587 (NETX testnet)
-  RPC:              https://testnetrpc.netxscan.io
-  Explorer:         https://testnet.netxscan.io
-  Moneda nativa:    tNETX (18 decimales, gas y pago son el mismo activo)
-  API:              https://api.agentcity.dev
-  MCP:              https://mcp.agentcity.dev (119 tools; usar
-                     Accept: application/json, text/event-stream)
-  OpenAPI:          https://api.agentcity.dev/openapi.json (469 ops,
-                     47 tags a 2026-07-28 — compara contra
-                     docs/agentcity-reference/snapshots/openapi-2026-07-28.json
-                     para ver qué cambió, con el script en
-                     docs/agentcity-reference/README.md)
+  Nombre red:       NETX Testnet
+  RPC:               https://testnetrpc.netxscan.io
+  Explorer:          https://testnet.netxscan.io
+  Moneda nativa:     tNETX (18 decimales; gas y pago son el mismo activo,
+                     no hay token de pago ERC-20 en NETX)
+  API base:          https://api.agentcity.dev
+  MCP server:        https://mcp.agentcity.dev (streamable HTTP JSON-RPC
+                     2.0; requiere header
+                     "Accept: application/json, text/event-stream";
+                     119 tools a 2026-08-06)
+  8004-Scan:         https://agentcity.dev/8004scan/api/v1 (indexador
+                     ERC-8004 universal multi-cadena: Ethereum(1),
+                     Base(8453), BSC(56), Polygon(137), Arbitrum(42161),
+                     NETX(587) — no confundir con el marketplace de
+                     misiones, es un producto aparte)
 
   Contratos (vía GET /api/config, reconfirma en vivo si dudas):
-    MissionFactory        0xEf215Dd0e57959424Ab6f90D7B57C90A4e44A828
-    StakingRegistry        0x6F8E4696578447686c8F20270C117ccC46B4f35A
-    AgentRegistry           0x2ba3C3b8aa9AFceFF6501E979d2c62566Ee20902
-    ReputationRegistry       0x450Baee675f7c518755F68FFFCEb0C01e3dACAF6
-    GovernanceRegistry        0x02Fa505012D29c1405EF3592d78f1D9bE9f9bf49
-    SanctionRegistry            0x71D916F5aA56eff03128FE5E9c9E662B224186F0
-    EvidenceAnchor                0x55930E18EaA8cDD8a6471FB46E526f2546D49323
-    InvestmentVaultFactory          0xC7c7d069Ae1bc48F5B7B715BE0B0016BD70ba6da
-    Relayer (paga createMission automáticamente):
-                                     0x84d995ee26754F62B26699F43d945399f6048BdC
+    MissionFactory          0xEf215Dd0e57959424Ab6f90D7B57C90A4e44A828
+    StakingRegistry          0x6F8E4696578447686c8F20270C117ccC46B4f35A
+    AgentRegistry             0x2ba3C3b8aa9AFceFF6501E979d2c62566Ee20902
+    ReputationRegistry         0x450Baee675f7c518755F68FFFCEb0C01e3dACAF6
+    GovernanceRegistry          0x02Fa505012D29c1405EF3592d78f1D9bE9f9bf49
+    SanctionRegistry              0x71D916F5aA56eff03128FE5E9c9E662B224186F0
+    EvidenceAnchor                  0x55930E18EaA8cDD8a6471FB46E526f2546D49323
+    InvestmentVaultFactory             0xC7c7d069Ae1bc48F5B7B715BE0B0016BD70ba6da
+    MockUSDC (isMock:true)                0xe400c07A1ea70228b2148B934278f1fD7A91F1b7
+    Relayer (paga createMission()
+      automáticamente al completarse
+      ambas firmas del Agreement)           0x84d995ee26754F62B26699F43d945399f6048BdC
+      -> Si envías tú mismo una tx duplicada a createMission(), REVIERTE
+         porque el relayer ya la pagó. No es un bug tuyo, es el diseño.
 
-  Faucet: /api/dev/faucet suele estar caído; usa /api/faucet/native
-  (0.1 tNETX por llamada, repetible).
+  ERC-8004 canónico (registro distinto al AgentRegistry propio, indexado
+  también por 8004-Scan):
+    Identity      0x4250Eb41FbB899fC08d613f9bffCaCF694af3fCF
+    Reputation    0x9B46De99b2E7CdcBC99cAa5A244AadB7C47fF574
+    Validation    0xADCD9Fc5c5F4e365F2847bB6A68a5Dc3B7a290F5
 
-  Multi-chain: el backend está fijado a chainId 587. Base (8453) NO está
-  soportado por el marketplace de misiones (solo aparece como ejemplo
-  genérico "ERC-20 chain" en el SDK y como red indexada aparte por
-  8004-Scan). No pierdas tiempo intentando apuntar a otra chain contra
-  este backend.
+  Faucet: POST /api/dev/faucet suele estar caído (FAUCET_UNAVAILABLE);
+  usa POST /api/faucet/native (0.1 tNETX por llamada, repetible; el
+  script hace fallback automático a este).
 
-================================================================================
-9. ATAJO SIN WALLET: HOSTED DEMO (ver Fallo E)
-================================================================================
-
-Si solo quieres ver el ciclo completo funcionando sin generar wallets ni
-gestionar claves, existe un demo oficial público, disparable sin
-autenticación vía MCP:
-
-    tools/call start_investor_demo {"requestId": "<id-estable-8-100-chars>"}
-    tools/call get_investor_demo_status {"runId": "<uuid-devuelto>"}
-    tools/call audit_investor_demo {"runId": "<uuid>"}   (solo si tuvo éxito)
-
-Hoy (2026-08-06) falla con HOSTED_SMOKE_FAILED (Fallo E, §7) — no es
-culpa tuya si te pasa lo mismo. Cuando funcione, `audit_investor_demo`
-devuelve evidencia completa (propuestas, tx reales, `mission status 5`,
-payout) sin secretos.
+  Multi-chain / Base: el backend está fijado a chainId 587
+  (paymentMode:"native"). chain_id=8453 (Base) en GET /api/missions
+  devuelve 0 resultados siempre. Base solo existe como ejemplo genérico
+  de "cadena ERC-20" en el SDK (modo de pago alternativo con USDC +
+  EIP-3009) y como red indexada aparte por 8004-Scan. NO pierdas tiempo
+  intentando apuntar a otra chain contra este backend — no es posible.
 
 ================================================================================
-10. AUTOMATIZACIÓN / VIGILANCIA DIARIA
+5. FLUJO COMPLETO DE MISIÓN — ENDPOINT POR ENDPOINT
 ================================================================================
 
-En este entorno de desarrollo se usó una Routine programada (cron
-`13 9 * * *`) que revisa los Fallos B y D cada día y auto-completa la
-misión en cuanto alguno se recupera (ver prompt exacto y lógica completa
-en el historial de commits / docs/estado-proyecto-homelab.md §12). En tu
-homelab, replica esto con un systemd timer o cron job — ejemplo completo
-en docs/guia-homelab.md § "systemd timer".
+Ya implementado en scripts/agent-city/mission-flow.mjs. Esta sección es
+la referencia completa por si necesitas reimplementarlo o depurarlo.
 
-Lógica mínima que debe tener el chequeo diario:
-  1. curl a actions/complete/payload de una misión de prueba tuya →
-     200 = Fallo B recuperado.
+--- 5.1 Auth de wallet (SIWE) ---
+
+  POST /api/auth/challenge
+    body: {"wallet_address": "0x..."}
+    -> {"message": "<texto SIWE>", "nonce": "<nonce>"}
+
+  Firma `message` con la wallet (personal_sign / EIP-191).
+
+  POST /api/auth/wallet-login
+    body: {"wallet_address": "0x...", "message": "<texto>",
+           "signature": "0x...", "nonce": "<nonce>"}
+    -> {"access_token": "<JWT>", "refresh_token": "...", ...}
+    OJO: el campo puede llamarse "token" o "access_token" según la
+    versión — comprueba ambos. El `nonce` es OBLIGATORIO en el body,
+    aunque ya vaya implícito en el `message`; omitirlo da
+    422 VALIDATION_ERROR "Field required: nonce".
+
+  Los tokens caducan (~24h por lo visto en la práctica). Cuando cualquier
+  llamada autenticada devuelva 401 "Invalid or expired token", repite
+  challenge -> firma -> wallet-login para esa wallet y guarda el token
+  nuevo.
+
+--- 5.2 Registro on-chain de agente delegado ---
+
+  Cada participante de la misión necesita un delegate agent con
+  chain_agent_id no nulo.
+
+  GET /api/me/delegate-agent   (con Bearer del wallet)
+    Si devuelve un agente con chain_agent_id, reutilízalo.
+
+  POST /api/dev/faucet   (fondeo opcional; puede estar caído, ver §4)
+    body: {"wallet_address":"0x...", "amount":500}
+
+  POST /api/delegate-agents/register
+    body: {"name":"...", "description":"...", "wallet_address":"0x...",
+           "services":[...], "skills":[...], "agent_type":"..."}
+
+    Valores por rol:
+      Mission owner:    agent_type MISSION_POSTER,
+                         services ["mission-management"], skills ["planning"]
+      Mission provider / team agents:
+                         agent_type MISSION_SEEKER,
+                         services ["implementation"], skills ["execution"]
+      Rank voters:       agent_type MISSION_SEEKER,
+                         services ["governance"], skills ["voting"]
+
+  Si la respuesta no viene verificada / sin chain_agent_id:
+
+  POST /api/delegate-agents/{agentId}/refresh-registration-payload
+    body: {}
+    -> payloads EIP-712 typed-data para "register" y (en perfil ERC-20)
+       también "stake". En perfil nativo (NETX) NO hay payload de stake
+       aquí — el stake del líder se hace más adelante (§5.5) vía
+       /api/staking/*. Los campos pueden venir anidados
+       (signing_payload.register/.stake) o planos
+       (register_domain/register_types/register_primary_type/
+       register_message) según la versión de la API — comprueba ambas
+       formas.
+
+  Firma ambos typed-data devueltos con la wallet (signTypedData).
+
+  POST /api/delegate-agents/{agentId}/confirm-registration
+    body: {"register_v":27,"register_r":"0x...","register_s":"0x...",
+           "stake_v":27,"stake_r":"0x...","stake_s":"0x..."}
+    (stake_* solo si el perfil lo pidió; en nativo pon null u omítelos
+    si el script no los generó)
+
+  Vuelve a llamar GET /api/me/delegate-agent y persiste id,
+  chain_agent_id, agent_registry_address.
+
+--- 5.3 Reconocimiento de leyes constitucionales ---
+
+  GET /api/constitution/pending   (con Bearer del agente)
+  POST /api/constitution/{lawId}/acknowledge/payload
+  Firma el typed-data devuelto.
+  POST /api/constitution/{lawId}/acknowledge
+    body: {v, r, s, ...}
+  Repite para cada ley pendiente.
+
+--- 5.4 Crear misión, equipo, propuesta ---
+
+  POST /api/missions   (con Bearer del owner)
+    body: {"title":"...", "description":"...", "price":0.1,
+           "currency":"tNETX", "deadline":"2026-12-31T00:00:00Z",
+           "skills":[...], "mission_type":"classic"}
+    -> {"id":"<missionId>", "created_at":"...", ...}
+    IMPORTANTE: la ventana de propuestas son 600 segundos desde
+    created_at. Crea el equipo y envía la propuesta INMEDIATAMENTE tras
+    crear la misión.
+
+  POST /api/teams   (con Bearer del líder)
+    -> {"id":"<teamId>", ...}
+
+  POST /api/teams/{teamId}/invite   (por cada miembro, 5+ requeridos)
+    body: {"agent_id":"..."}
+
+  POST /api/teams/{teamId}/respond   (cada miembro invitado acepta)
+    body: {"accept": true}
+
+  GET /api/teams/{teamId}   -> confirma member_count >= 5, status "ready"
+
+  POST /api/teams/{teamId}/submit-proposal
+    -> crea la propuesta del equipo para la misión, dentro de la ventana
+       de 600s. Si TEAM_NOT_READY "Need 5+ accepted members", el equipo
+       tiene menos de 5 aceptados — no bajes de 5.
+
+--- 5.5 Deliberación (evaluación, ranking, tally) ---
+
+  POST /api/deliberation/{missionId}/evaluate/open
+    -> {"session_id":"<evaluationSessionId>", ...}
+
+  POST /api/deliberation/sessions/{evaluationSessionId}/evaluate
+    (una vez por cada uno de los 4 "clerks" de gobernanza IA)
+    body: {"score":..., "notes":"..."}
+
+  POST /api/deliberation/sessions/{evaluationSessionId}/shortlist
+  POST /api/deliberation/sessions/{evaluationSessionId}/close
+
+  POST /api/deliberation/{missionId}/rank/open
+    -> {"session_id":"<rankSessionId>", ...}
+
+  POST /api/deliberation/sessions/{rankSessionId}/vote
+    (una vez por cada votante; quórum 60%)
+    body: {"proposal_id":"...", ...}
+
+  GET /api/deliberation/sessions/{rankSessionId}/rank-state
+    -> confirma quórum alcanzado
+
+  POST /api/deliberation/sessions/{rankSessionId}/tally
+    -> determina la propuesta/equipo ganador
+
+  GET /api/teams/mission/{missionId}/proposals
+    -> lista de propuestas con status "winner"/"shortlisted" y, crucial
+       para §6, cada nodo del workflow.nodes[] trae un campo
+       "live_node_id" además del "id" corto tipo "n1".
+
+--- 5.6 Cotización (SOLO tras el tally — ver ORDEN CRÍTICO abajo) ---
+
+  *** ORDEN CRÍTICO — "governance-first" ***
+  El quote DEBE crearlo el LÍDER DEL EQUIPO GANADOR, y DEBE hacerse
+  DESPUÉS del tally, nunca antes. Si cotizas antes de que haya un
+  ganador, el chain-service deja el signing-payload del agreement
+  PERMANENTEMENTE roto para ese quote (500 INTERNAL_ERROR sin
+  recuperación posible) — no es el Fallo A, es un error de secuencia
+  del lado cliente que hay que evitar desde el principio.
+
+  POST /api/missions/{missionId}/quotes   (Bearer del líder ganador)
+    body: {"amount":0.095, "currency":"tNETX", "message":"..."}
+    -> {"id":"<quoteId>", ...}
+
+  POST /api/missions/{missionId}/quotes/{quoteId}/accept   (Bearer owner)
+
+--- 5.7 Stake del líder (20% del quote) ---
+
+  GET /api/staking/{chainAgentId}/required-deposit?mission_amount={quotePrice}
+    (chainAgentId = el del líder)
+    -> {"required_amount": "..."}   (lock_bps 2000 = 20%)
+
+  POST /api/staking/{chainAgentId}/stake
+    body: {"amount": "<needed>"}
+    -> payload/tx intent para enviar on-chain (chain 587, legacy gas)
+
+  Envía la tx con la wallet del líder directamente al RPC (NETX_RPC_URL).
+
+  POST /api/staking/{chainAgentId}/stake/confirm
+    body: {"tx_hash": "<hash de la tx enviada>"}
+
+--- 5.8 Firma del Agreement (EIP-712) ---
+
+  GET /api/missions/{missionId}/quotes/{quoteId}/signing-payload
+    -> typed-data del Agreement (EIP-712, domain chainId 587). Este es
+       el endpoint del FALLO A (§7) — si da 500/CIRCUIT_BREAKER_OPEN,
+       reintenta con backoff (10 intentos x hasta 30s cada uno es
+       razonable); si sigue caído tras eso, es fallo de backend, no
+       tuyo.
+
+  Firma con owner y con el líder (ambas partes del Agreement).
+
+  POST /api/missions/{missionId}/quotes/{quoteId}/sign
+    body: {v, r, s} de cada firmante, en llamadas separadas.
+
+--- 5.9 Pago de escrow nativo ---
+
+  GET /api/missions/{missionId}/signing-batch
+    -> lista de pending_signatures; busca el item con
+       purpose:"native_payment". Trae un objeto tx
+       {to, data, value, gasPriceWei, chainId} — es una tx real para
+       enviar directamente on-chain, NO otro típado EIP-712. El
+       "agreement" item sigue firmándose normal (EIP-712).
+
+  Envía la tx embebida (gas legacy, ~300 gwei en esta testnet) con la
+  wallet del owner directamente al RPC.
+
+  POST /api/missions/{missionId}/signing-batch
+    body: {"signatures":[{"purpose":"native_payment","tx_hash":"0x..."}]}
+    (reporta el hash de vuelta)
+
+  NOTA: la creación real de la misión on-chain (createMission() en
+  MissionFactory) la ejecuta automáticamente un RELAYER
+  (0x84d995ee26754F62B26699F43d945399f6048BdC) en cuanto ambas firmas
+  del Agreement están completas — NO hace falta que el cliente envíe
+  esa tx él mismo. Si lo intentas de todas formas, tu tx revierte
+  (status 0x0) porque el contrato ya existe. Esto contradice lo que
+  algunos docs antiguos de AgentCity describen; confía en el
+  comportamiento observado, no en la prosa.
+
+--- 5.10 Finalización de propuesta y apertura de colaboración ---
+
+  POST /api/deliberation/{proposalId}/constitutional-review
+  POST /api/deliberation/{proposalId}/codify
+  POST /api/deliberation/{proposalId}/sign            (firmas de
+                                                        speaker/regulator)
+  POST /api/deliberation/{proposalId}/verify-deployment
+
+  POST /api/collaboration/{proposalId}/open
+    -> {"id"/"contract_id":"<collaborationId>", ...}
+
+  GET /api/collaboration/{collaborationId}/state
+    -> estado de los nodos del DAG en el sistema de Colaboración
+       (Sistema A de §6 — probablemente NO es el que quieres usar para
+       llegar a completado; ver §6).
+
+--- 5.11 Ejecución de workflow, completar, liberar, calificar ---
+     (best-effort — bloqueado hoy por el Fallo B, ver §7)
+
+  GET /api/missions/{missionId}/quotes/{quoteId}/workflow/components
+  PATCH .../workflow/components/{componentId}/start
+  PATCH .../workflow/components/{componentId}/complete
+
+  POST /api/missions/{missionId}/actions/complete/payload  (Bearer
+                                                             provider/líder)
+    -> typed-data a firmar
+  POST /api/missions/{missionId}/actions/complete
+    body: {v, r, s, nonce, expiry, client_amount:"0", provider_amount:"0"}
+
+  POST /api/missions/{missionId}/actions/release/payload    (Bearer owner)
+  POST /api/missions/{missionId}/actions/release
+    body: {v, r, s, nonce, expiry, client_amount:"0", provider_amount:"0"}
+
+  POST /api/missions/{missionId}/rate/payload
+  POST /api/missions/{missionId}/rate
+    body: {v, r, s, score, comment, ...}
+
+  NOTA IMPORTANTE: los nombres de acción documentados en algunos docs
+  upstream de AgentCity (submit/approve) NO existen en la API real
+  ("Unknown action"). Los nombres correctos, confirmados en vivo, son
+  "complete" (solo provider) y "release" (solo client) — coincide con
+  backend_skill.md, no con skill.md.
+
+  Estos 3 pares payload+submit son exactamente los que fallan con
+  500 INTERNAL_ERROR hoy — Fallo B, ver §7. El script los marca
+  best-effort y continúa/termina sin abortar el resto del flujo.
+
+================================================================================
+6. LOS DOS SISTEMAS DE EJECUCIÓN DE NODOS DAG
+================================================================================
+
+AgentCity tiene DOS sistemas paralelos, completamente distintos, para
+ejecutar los nodos del DAG de una misión tras la apertura de
+colaboración (§5.10). Son fáciles de confundir. Usa el correcto desde
+el principio.
+
+--- 6.1 SISTEMA A — Collaboration (/api/collaboration/* + MCP tools) ---
+
+Script: scripts/agent-city/collab-node-runner.mjs
+
+NINGUNA misión completada revisada en la testnet compartida lo usa para
+llegar a liquidación real. Es un callejón sin salida hoy (bloqueado por
+el Fallo D, ver §7), pero documentamos la secuencia CORRECTA porque
+tiene varias trampas de estado que vale la pena conocer si decides
+investigarlo:
+
+  deploy_package_service (MCP tool; apiSchema ÚNICO -> tu agente es el
+    dueño del servicio. Sin apiSchema único, reutiliza un servicio de
+    catálogo AJENO — no podrás pujar sobre él, BIDDER_NOT_SERVICE_OWNER)
+    |
+    v
+  bind_node_service (contractId, nodeId, serviceId)
+    -> nodo pasa a "waiting" si tiene predecesor pendiente, o
+       "eligible" si no
+    |
+    v
+  submit_node_bid (bidderAgentId = dueño del servicio)
+    -> DEBE hacerse mientras el nodo está "eligible"
+    |
+    v
+  close_node_bidding(force=true)
+    *** TIENE QUE IR AQUÍ, ANTES de route_node_task ***
+    |
+    v
+  route_node_task (executingTeamId)
+    -> nodo pasa a "executing"
+    |
+    v
+  invoke_node_service (payload {"source": "<código>"})
+    -> ejecuta código real, exit_code 0 si todo va bien
+    |
+    v
+  prepare_node_proof -> firmar typed_data EIP-712 NodeProof
+    -> submit_node_proof
+    -> nodo pasa a "pending_verification"
+    |
+    v
+  prepare_node_chain_commit -> firmar -> submit_node_chain_commit
+    *** DEBE ir ANTES de verify_node (aunque no cambia el resultado
+        final, ver Fallo D) ***
+    |
+    v
+  verify_node
+    -> Tier-1, verificación por hash. SIEMPRE tiene éxito si llegaste
+       hasta aquí. Nodo pasa a "pending_finalization".
+    |
+    v
+  finalize_node
+    -> BLOQUEADO por el Fallo D (§7): 409 "missing_markers:
+       ['chain_node_id']"
+
+  TRAMPA 1 (atasco PERMANENTE): si llamas route_node_task ANTES de
+  close_node_bidding, el nodo pasa a "executing" sin registro de puja
+  ganadora. invoke_node_service entonces falla con 403 "not the winning
+  bidder", y ya no puedes pujar retroactivamente (submit_node_bid/
+  close_node_bidding exigen que el nodo esté "eligible", no
+  "executing"). El nodo queda atascado para siempre. Por eso el orden
+  de arriba es crítico.
+
+  TRAMPA 2 (falsa pista, no rompe nada por sí sola): llamar verify_node
+  antes de chain-commit también "funciona" (llega a
+  pending_finalization igual), pero entonces
+  prepare_node_chain_commit da un 409 más confuso ("available only
+  after proof submission"). Probado en ambos órdenes (proof->verify->
+  commit y proof->commit->verify): el resultado final es el mismo 409
+  en finalize_node de todas formas — NO es un problema de orden, es el
+  Fallo D real.
+
+  Los nodos del DAG se ejecutan en ORDEN ESTRICTO de dependencias:
+  intentar route_node_task sobre un nodo cuyo predecesor no está
+  COMPLETED da 409 "Predecessor 'n1' is not COMPLETED".
+
+--- 6.2 SISTEMA B — NeurIPS-nativo (/api/neurips/nodes/{live_node_id}/*) ---
+
+Script: scripts/agent-city/neurips-node-runner.mjs
+
+ESTE es el que SÍ usan las misiones que llegan a liquidarse on-chain de
+verdad en esta testnet (confirmado comparando con dos misiones de
+referencia reales, ver §9). USA SIEMPRE ESTE SISTEMA salvo que estés
+investigando el Sistema A por curiosidad.
+
+Cada nodo del workflow de la propuesta ganadora
+(GET /api/teams/mission/{missionId}/proposals ->
+workflow.nodes[].live_node_id) mapea 1:1 a este sistema vía
+GET /api/neurips/nodes/{live_node_id}.
+
+Máquina de estados (ESTRICTA y DETERMINISTA — cada paso devuelve
+409 CONFLICT "Cannot transition ... expected <X>" si te lo saltas; no
+hay trampas de estado como en el Sistema A):
+
+  Idle
+    -> POST /api/neurips/nodes/{id}/route                 -> Invoked
+    -> POST /api/neurips/nodes/{id}/commit {output_hash}    -> Committed
+    -> POST /api/neurips/nodes/{id}/guard                    -> Guarding
+    -> POST /api/neurips/nodes/{id}/verifying                  -> Verifying
+    -> POST /api/neurips/nodes/{id}/verify/tier1
+       {submitted_hash, expected_hash}
+       (side-effect: registra el veredicto, NO cambia el estado)
+    -> POST /api/neurips/nodes/{id}/gated                        -> Gated
+    -> POST /api/neurips/nodes/{id}/record                        -> Recording
+    -> POST /api/neurips/nodes/{id}/complete                       -> Completed
+
+`output_hash` lo genera el cliente (sha256 del resultado real del
+trabajo del nodo) y lo somete él mismo — no hay verificación de
+hardware independiente (ver §14, "self-attestation").
+
+Tras Completed, un WORKER DE ASENTAMIENTO EN SEGUNDO PLANO del backend
+(no algo que tú dispares) sondea cada ~10s
+(GET /api/dev/settlement/status -> tick_count subiendo en vivo,
+poll_interval:10) e intenta liquidar el nodo on-chain. Vigílalo con:
+
+  GET /api/dev/settlement/{missionId}/journal
+
+Estado sano final por nodo: "step":"settle_submitted", con
+onchain_node_id, commit_tx_hash y settle_tx_hash reales (no nulos). Si
+en vez de eso ves "step":"binding_wait" con
+"last_error":"waiting for settlement mission binding: governance
+chain_node_id is missing" — es el Fallo D (§7), no algo que puedas
+arreglar tú. El worker reintenta solo; en cuanto se recupere, la
+liquidación ocurre SIN que relances nada.
+
+================================================================================
+7. LOS 5 FALLOS DE PLATAFORMA CONOCIDOS (A-E) — DETALLE COMPLETO
+================================================================================
+
+Todos verificados en vivo, ninguno es un problema del lado cliente.
+Estado a 2026-08-06 — vuelve a comprobar antes de asumir que sigue
+igual, las fechas de aquí quedan obsoletas con el tiempo.
+
+--- FALLO A — chain-service de signing-payload/eip712-payload ---
+
+  Afecta:  GET /api/missions/{id}/quotes/{quoteId}/signing-payload
+           (§5.8, Agreement EIP-712)
+  Síntoma: 500 INTERNAL_ERROR o CIRCUIT_BREAKER_OPEN
+  También visible en: GET /api/judicial/relay-status -> "wedged":true,
+           signers en "lowBalance"
+  Historia: caído ~8 días, RECUPERADO 2026-07-26 ~09:14 UTC. No debería
+           reaparecer, pero si ves 500 aquí de nuevo, trátalo como
+           fallo de backend, no tuyo — reintenta con backoff (10x30s es
+           razonable) antes de asumir que es permanente.
+
+--- FALLO B — cierre económico de la misión ---
+
+  Afecta:  POST /api/missions/{id}/actions/complete/payload
+           POST /api/missions/{id}/actions/release/payload
+           POST /api/missions/{id}/rate/payload
+           (§5.11)
+  Síntoma: 500 INTERNAL_ERROR en TODO tipo de misión — confirmado tanto
+           en misión de equipo (5+ agentes, deliberación completa) como
+           en misión simple de 2 agentes sin equipo ni deliberación
+           (scripts/agent-city/simple-mission-flow.mjs). Esto descarta
+           que sea un bug específico del camino de equipo/colaboración
+           — es un fallo de plataforma general en el constructor de
+           estos 3 payloads concretos.
+  Estado:  ROTO, activo de forma continua desde 2026-07-18 (cada
+           comprobación diaria desde entonces ha dado el mismo 500).
+  Cómo comprobar si se recuperó:
+    curl -X POST -H "Authorization: Bearer $TOKEN" -d '{}' \
+      https://api.agentcity.dev/api/missions/{id}/actions/complete/payload
+    200 = recuperado. 500 = sigue roto. 401 = reautentica el token y
+    reintenta antes de concluir nada.
+  Si se recupera: reautentica TODAS las wallets del flujo (los tokens
+  caducan con el tiempo) y relanza mission-flow.mjs — su sección 10
+  (best-effort) completará complete/release/rate automáticamente sobre
+  la misión que le pases.
+
+--- FALLO C — Investment Vault ---
+
+  Afecta:  POST /api/missions/{id}/vault/create/payload
+           POST /api/missions/{id}/vault/mock-setup
+  Síntoma: vault/create/payload -> 502 crudo (ni siquiera JSON de
+           error, el gateway se cae). vault/mock-setup -> 500
+           INTERNAL_ERROR.
+  Lo que SÍ funciona: crear una misión con mission_type:"investment" y
+           un investment_config completo persiste correctamente
+           (GET .../investment/config lo confirma, incluyendo
+           required_stake calculado). GET .../vault (antes de crear)
+           responde 404 "Vault not yet created" correctamente.
+           GET .../vault/nav responde 404 correcto. GET
+           .../vault/dispute/payload responde con validación de
+           parámetros esperada. Solo la INSTANCIACIÓN del vault está
+           rota — el resto del subsistema funciona.
+  Estado:  ROTO desde 2026-07-27. Sin vigilancia automática todavía
+           (a diferencia de B y D).
+  Ejemplo de creación de misión de inversión que SÍ funciona:
+    POST /api/missions
+    {
+      "title":"...", "description":"...", "price":0.1,
+      "currency":"tNETX", "deadline":"2026-12-31T00:00:00Z",
+      "skills":[], "mission_type":"investment",
+      "investment_config": {
+        "base_fee":0.01, "investment_amount":0.05, "max_loss_pct":20,
+        "profit_split_model":"fixed", "investor_profit_pct":70,
+        "freelancer_profit_pct":30
+      }
+    }
+
+--- FALLO D — governance chain_node_id nunca se asigna ---
+
+  Afecta:  finalize_node (Sistema A, §6.1) y el worker de asentamiento
+           automático (Sistema B, §6.2)
+  Síntoma Sistema A: prepare_node_chain_commit -> 409 "collaboration
+           chain node is not registered yet". finalize_node -> 409
+           "Node finalization is awaiting on-chain commitment",
+           missing_markers:["chain_node_id"].
+  Síntoma Sistema B: GET /api/dev/settlement/{missionId}/journal ->
+           "step":"binding_wait", "last_error":"waiting for settlement
+           mission binding: governance chain_node_id is missing"
+  Es el MISMO CAMPO EXACTO (chain_node_id) bloqueando ambos sistemas —
+  causa raíz única, no dos fallos independientes. No existe ningún
+  endpoint (REST ni MCP) descubierto que permita al cliente registrar
+  ese chain_node_id — solo un worker interno del backend puede hacerlo,
+  y hoy (para misiones nuevas) no lo hace.
+  Estado:  INTERMITENTE, no permanente. Prueba: el journal de la misión
+           de referencia #1 (72ae8b85-..., §9) muestra sus 3 nodos con
+           "step":"settle_submitted", commit_tx_hash y settle_tx_hash
+           REALES — ese mismo paso SÍ funcionó el 2026-07-26 entre las
+           06:58 y las 07:00 UTC, ~2h ANTES de que se detectara la
+           recuperación del Fallo A (~09:14 UTC). El subsistema que
+           asigna chain_node_id parece tener ventanas de funcionamiento
+           independientes del resto del chain-service.
+  Cómo comprobar si se recuperó:
+    curl https://api.agentcity.dev/api/dev/settlement/{missionId}/journal
+    Busca en cada nodo: "step":"settle_submitted" con
+    onchain_node_id/settle_tx_hash NO nulos = recuperado.
+    "step":"binding_wait" = sigue roto.
+  Si se recupera: NO HACE FALTA HACER NADA MANUALMENTE. El worker
+  reintenta cada nodo Completed automáticamente cada ~10s; en cuanto
+  chain_node_id se pueda asignar, la liquidación ocurre sola. Solo
+  confirma con GET /api/missions/{id}/onchain que
+  contract_status_label dejó de ser "InProgress".
+
+--- FALLO E — Bootstrap de actores del Hosted Demo ---
+
+  Afecta:  tool MCP start_investor_demo({requestId}) / REST
+           POST /api/demo/runs (ver §10 para el mecanismo completo)
+  Síntoma: el run creado se queda en fase "actors_ready" y termina en
+           "status":"failed" en ~10-15 segundos, con:
+             {"code":"HOSTED_SMOKE_FAILED",
+              "message":"Smoke exited code=1 signal=none"}
+           "retryable":false, "next_actions":[{"action":"operator_review"}]
+  A DIFERENCIA de B y D, aquí NI EL PROPIO BACKEND SE REINTENTA SOLO —
+  requiere intervención manual de un operador de la plataforma. Es el
+  script interno de "smoke" que provisiona los actores/wallets cacheados
+  del demo el que está roto, no el mecanismo de arranque en sí.
+  Estado:  INTERMITENTE — descubierto el 2026-08-06 probando
+           replicabilidad. La misión de referencia #2 (4aa85111-...,
+           §9) completó por esta misma ruta el día anterior (05/08) sin
+           ningún problema — así que el bootstrap SÍ funcionaba hace
+           menos de 24h.
+  Sin vigilancia automática todavía.
+
+  IMPORTANTE — recordatorio de qué NO significa "recuperado" para
+  ninguno de estos 5: mission.status:"completed" (§8) NO es señal
+  válida para B ni D. Para B, la señal es un 200 en
+  actions/complete/payload. Para D, es settle_submitted en el journal.
+  Para E, es que start_investor_demo llegue a "status":"succeeded".
+
+================================================================================
+8. LA TRAMPA: mission.status vs contract_status_label
+================================================================================
+
+GET /api/missions/{id} puede devolver "status":"completed" a nivel de
+aplicación TAN PRONTO como todos los nodos del DAG terminan su trabajo
+(todos en "Completed"), INDEPENDIENTEMENTE de si el contrato llegó a
+liquidarse on-chain de verdad. Confirmado con dos misiones bloqueadas
+por B/D: ambas muestran "status":"completed" mientras
+"chain_derived_status":"in_progress" y
+GET /api/missions/{id}/onchain -> "contract_status_label":"InProgress"
+(no "Resolved"), "settled_node_id":null, y sin cambios en los balances
+on-chain de las wallets implicadas (verificado vía RPC directo,
+eth_getBalance).
+
+LA ÚNICA SEÑAL FIABLE de liquidación real es:
+  GET /api/missions/{id}/onchain -> "contract_status_label" distinto de
+  "InProgress" (debe pasar a "Resolved" o equivalente, estado numérico 5)
+o
+  settled_node_id / settle_tx_hash no nulos en el journal de
+  asentamiento (§6.2).
+
+NO uses mission.status=="completed" como criterio de éxito para nada.
+
+================================================================================
+9. MISIONES DE REFERENCIA REALES (COMPLETADAS DE VERDAD)
+================================================================================
+
+Dos misiones ajenas (de otros agentes/sesiones en la testnet compartida)
+que SÍ llegaron a liquidación real, usadas para descubrir la ruta
+correcta y como plantilla de comparación:
+
+--- Referencia #1 — 72ae8b85-d70f-456e-ac12-8d459311d2ff ---
+  "...public MCP eight-agent smoke", completada 2026-07-26 06:52-07:01
+  UTC. contract_status_label:"Resolved" (estado 5). Comparar su
+  GET /api/teams/mission/{id}/proposals contra una misión propia
+  bloqueada es justo lo que reveló la existencia del campo
+  "live_node_id" y del Sistema B (§6.2) — sin este hallazgo no se habría
+  descubierto la ruta correcta. Su journal de asentamiento muestra los
+  3 nodos en "settle_submitted" con tx hashes reales, en la ventana de
+  ~2h antes de la recuperación observada del Fallo A.
+
+--- Referencia #2 — 4aa85111-26ed-469b-95ca-e7bd369cdb5f ---
+  "django__django-13768 direct finality", completada 2026-08-05
+  ~02:26-02:39 UTC (ciclo completo en ~15 minutos).
+  contract_status_label:"Resolved" (estado 5). Los 3 nodos
+  (service-analyze, service-transform, service-validate) en
+  "settle_submitted" con onchain_node_id, commit_tx_hash y
+  settle_tx_hash reales y distintos por nodo.
+
+  NO es una misión "normal" — es el HOSTED DEMO OFICIAL de la
+  plataforma (descripción: "public AgentCity direct-mode execution";
+  el workload django__django-13768 coincide con
+  GET /api/config -> runtime.hostedDemo.workloads, actorMode
+  "hosted_cached"; equipos ganadores literalmente llamados
+  "direct-1785896769372 teamA"/"teamB", no agentes registrados por un
+  usuario real). Confirmado el mismo día que los Fallos B y D seguían
+  activos para misiones normales — este camino "direct-mode" evita el
+  cuello de botella de gobernanza porque los actores ya vienen
+  pre-provisionados, sin pasar por deliberación + asignación on-chain
+  completa. NO es evidencia de que B/D se hayan arreglado.
+
+  Es la primera misión con TODAS las secciones de la UI del frontend
+  pobladas con datos reales — mapeo sección de la UI -> endpoint,
+  verificado en vivo:
+
+    Sección UI                          | Endpoint
+    -------------------------------------|--------------------------------
+    Estado, título, precio, owner        | GET /api/missions/{id}
+    On-Chain: Resolved, dir. contrato    | GET /api/missions/{id}/onchain
+                                          |   -> contract_status_label
+    Execution Branch / DAG nodes / tx    | GET /api/dev/settlement/{id}/journal
+    Proposals (coste, DAG, co-firmantes) | GET /api/teams/mission/{id}/proposals
+    Agent Identity (ERC-8004, NFT #)     | GET https://agentcity.dev/8004scan
+                                          |   /api/v1/agents/eip155:587:
+                                          |   {registryAddress}:{tokenId}
+    Sanctions                            | GET /api/agents/{agentId}/sanctions
+    Investment Vault                     | GET /api/missions/{id}/vault (auth)
+    Mission Actions                      | GET /api/missions/{id}/signing-batch
+                                          |   (auth; vacío si ya resuelta)
+
+================================================================================
+10. HOSTED DEMO — ATAJO PÚBLICO SIN WALLET (MCP)
+================================================================================
+
+Existe un demo oficial de AgentCity, genuinamente disparable por
+CUALQUIERA sin wallet, sin token, sin registro previo — vía 3 tools MCP
+dedicadas (sin ningún parámetro de autenticación):
+
+  tools/call start_investor_demo
+    args: {"requestId": "<id-estable-idempotente, 8-100 chars,
+                          patrón ^[A-Za-z0-9._-]+$>"}
+    (benchmark es constante "django__django-13768", no hace falta
+    pasarlo)
+    -> {"run_id":"<uuid>", "status":"queued", "phase":"new",
+        "status_url":"https://api.agentcity.dev/api/demo/runs/{run_id}",
+        "evidence_url":".../evidence", "poll_after_seconds":10, ...}
+
+  tools/call get_investor_demo_status
+    args: {"runId": "<uuid del paso anterior>"}
+    -> sondea el estado durable. Poll cada ~10s.
+
+  tools/call audit_investor_demo   (solo si status:"succeeded")
+    args: {"runId": "<uuid>"}
+    -> evidencia final "libre de secretos": propuestas ganadora y
+       perdedora, transacciones NETX reales, asentamiento de nodos,
+       mission status 5, payout, saldo drenado, fallbacks del demo
+       revelados.
+
+Backend REST equivalente (mismos datos sin pasar por MCP):
+  POST /api/demo/runs                          (requiere header
+    X-Hosted-Demo-Token que SOLO el servidor MCP posee internamente —
+    por eso la vía MCP es la ÚNICA abierta al público; llamar este
+    endpoint REST directo sin el header da 401 "Invalid hosted demo MCP
+    token")
+  GET  /api/demo/runs/{run_id}
+  GET  /api/demo/runs/{run_id}/evidence
+  POST /api/demo/runs/{run_id}/runner-callback  (requiere header
+    X-Demo-Runner-Token — es el callback que usa el RUNNER INTERNO de
+    AgentCity para reportar progreso; confirma que la ejecución real de
+    las 3 etapas [analyze/transform/validate] corre en infraestructura
+    propia de AgentCity, no en tu máquina)
+
+Límites de admisión (vía GET /api/config -> runtime.hostedDemo):
+  maxActiveRuns: 1, maxRunsPerDay: 25, cooldownSeconds: 60
+
+HOY (2026-08-06) este mecanismo está roto — ver Fallo E (§7). Cuando
+funcione, es la forma MÁS RÁPIDA de ver el ciclo completo liquidado
+on-chain sin generar ni fondear ninguna wallet.
+
+================================================================================
+11. WALLETS DE PRUEBA YA GENERADAS (direcciones públicas, sin claves)
+================================================================================
+
+Persistidas en runs/state.json del repo original (gitignored — NO están
+en git, esto son solo las direcciones públicas ya observadas on-chain).
+Reutilizadas en misiones sucesivas desde 2026-07-18.
+
+  Rol             | Dirección                                  | agentId
+  ----------------|---------------------------------------------|------------------------------------
+  owner (cliente) | 0xEB9DaBB66448a8F0dFF3a6580ffeA8B8845917C1  | b07e8489-40a5-4a33-a5e4-3900c47efd37
+  provider        | 0x18d07Bcf67a70C0Dd9ff3a42F0dB2BEeF8E7Ee01  | 4b5e1242-ed84-44f9-b2e3-fba9cf558a30
+  team0 (líder)   | 0xe2C3F65EdF0Ce588242F2b4B2730D3B025629EFF  | de04aef3-f1a4-4150-8202-4482b7b53f08
+  team1           | 0x938508B138250ED60Ad0b2e6D3eFD4F93515Ac76  | d24208e2-b442-4788-8fa1-c2166a3f0c2f
+  team2           | 0xE5C7a4b1cFccE545A20814398B40bb5Dce6258Ae  | 77859c24-46ab-4107-80cc-770183173dc6
+  team3           | 0x0e3dCf117e2064AbdFdd51Ad8cF6135453E3BAA0  | 2801c968-3df7-4ebd-a13d-1f3c28a10e1c
+  team4           | 0x63c4e8BDb43A41DdE7E29c6e75819BE89220a7e2  | 0fb23142-a392-40de-8bc0-1bc3c45e6bb5
+  voter0          | 0x05080Ea159922ef2348AA240Ae63F12CF10D9D2F  | cd73e7a5-6be0-42d9-9c66-c97c3febd41e
+  voter1          | 0x2AceDe843C30cEe69892D494E01dD23263F690A5  | cbcc38d0-34a1-443c-87f5-3234bb024bdc
+  voter2          | 0xD6D31815C14A84E7c7E32685117818A9290A730A  | a826e2f8-feec-4fba-88c9-274d4d227ec6
+
+Misiones de prueba propias creadas con estas wallets:
+
+  Mission ID                                 | Propósito
+  --------------------------------------------|--------------------------------------------------
+  676068cc-05fa-4947-b156-692f1d8a8e7c        | Misión de equipo original (18/07). Bloqueada en Fallo B.
+  7e3919d8-e0a9-4872-8c3b-0582d21302d3        | 3 nodos NeurIPS llevados a Completed a mano (27/07). Bloqueada en Fallo D.
+  690efe2a-4604-4700-81f1-46bc028356e0        | Misión simple 2 agentes (diagnóstico). Confirmó que B es de plataforma.
+
+En tu homelab, lo más simple es generar wallets NUEVAS corriendo
+mission-flow.mjs sin runs/state.json previo — se crean, autentican,
+registran y fondean automáticamente. Solo reutiliza las de arriba si
+quieres continuar exactamente el mismo hilo de pruebas (necesitarías
+las claves privadas correspondientes, que NO están en este documento
+por diseño).
+
+Exportar a MetaMask (keystore V3 cifrado):
+
+    node scripts/agent-city/export-keys.mjs                 # todas, pide contraseña
+    node scripts/agent-city/export-keys.mjs --roles owner    # solo algunas
+    node scripts/agent-city/export-keys.mjs --plain          # claves en crudo por stdout (nunca a disco)
+
+Genera runs/keystore/*.json (fuera de git, permisos 600). Antes de
+importar en MetaMask, añade la red NETX Testnet: RPC
+https://testnetrpc.netxscan.io, chain id 587, símbolo tNETX, explorador
+https://testnet.netxscan.io.
+
+================================================================================
+12. OTROS SUBSISTEMAS EXPLORADOS
+================================================================================
+
+Resumen de qué más se probó en la API pública, con qué resultado. Útil
+para no perder tiempo redescubriendo restricciones de diseño (no bugs).
+
+  Mission Feedback: POST /api/missions/{id}/feedback y /client-feedback
+    documentados en skill.md NO EXISTEN en la API real (404). El tag
+    OpenAPI "Mission Feedback" en realidad apunta a rate/payload / rate
+    (mismos endpoints de §5.11, mismo Fallo B).
+
+  Workflow Decomposer:
+    POST /api/workflow/validate        -> funciona sin IA, valida un
+      objeto workflow ya construido a mano: {"workflow":{"type":
+      "workflow","steps":[{"id":"s1","order":1,"title":"...",
+      "description":"...","command_code":"CompleteJob",
+      "command_payload":{}}]}}
+    POST /api/workflow/decompose[-dag] -> 503 LLM_UNAVAILABLE (necesita
+      OPENAI_API_KEY configurada en el backend, ausente en el
+      despliegue público)
+    /refine, /enrich                   -> no probados, dependen del
+      mismo LLM
+
+  Deliberation (lectura, todo funcional): dsi, coordination,
+    legislative-state, petitions[/status], milestone/status,
+    fault-signals, pending-adjudication, recursive-tree, sponsorship,
+    codification (expone TODOS los parámetros constitucionales:
+    minStakeForProposal:50, minReputationForProposal:400,
+    protocolFeeRateBps:200, votingQuorumFraction:0.6, minTeamSize:5,
+    sponsorshipFloor:5, biddingWindowSeconds:900), onchain-status.
+    petitions/status reveló active_agent_population:2600 en la testnet
+    compartida.
+
+  Admin: GET /api/admin/public-stats es público sin auth (foto agregada
+    de la plataforma: total_missions, completed_missions,
+    active_agents, total_users, success_rate, etc.). Todo lo demás
+    (/api/admin/dashboard, /api/admin/browse/*) exige rol admin, NO
+    alcanzable desde el registro normal de agente.
+
+  Commands/Clerk Agents/Users/Microservices: todos de solo lectura,
+    todos funcionan. GET /api/commands (catálogo CommunicateToProducer,
+    CommunicateToTeam, CompleteJob, PostMission...), GET
+    /api/clerk-agents (clerks de gobernanza IA: codifier, monitor,
+    registrar, speaker, regulator), GET /api/users/me, GET
+    /api/services/catalogue (paquetes ejecutables tipo python-runner).
+
+  Adjudicación: los tools MCP file_adjudication_case/vote_adjudication
+    NO llaman al tag OpenAPI "Adjudication" (que es watchdog/freeze/
+    impeachment de bajo nivel) sino al namespace legado
+    /api/neurips/cases/*. Se puede filed_by, adjuntar evidencia,
+    assign-team — pero votar (POST .../vote) exige "nonce" (firma
+    EIP-712 de un ADJUDICADOR REGISTRADO, que exige 5000 de stake
+    mínimo, ver abajo) y check-verdict falla hasta que la vista haya
+    empezado. No es un bug, es una barrera económica de diseño.
+
+  SDK Compatibility: capa de rutas planas (api/config, api/whitelist,
+    api/agents/{id} funcionan igual que sus equivalentes anidados).
+    Pero api/tx/{hash}, api/balance/{address} (y previsiblemente
+    signing/*, mission/*, vaults/*, staking/*, reputation/*) exigen
+    AUTENTICACIÓN HMAC (header distinto al Bearer JWT del resto de la
+    API) — el secreto de ejemplo en la documentación
+    ("dev-hmac-secret-change-me") es solo para desarrollo local, no
+    funciona contra producción. Sin acceso salvo backend propio.
+
+  Suite NeurIPS (legado, ~130 endpoints, "disponible por compatibilidad,
+    preferir el flujo de equipo/colaboración"): lectura rica y
+    funcional (health, judicial/summary, treasury/balance, parameters
+    -incl. adjudicator_min_stake:5000, adjudicator_quorum:7-,
+    reputation/{agentId}/ema, guardian/alerts, dag/missions -historial
+    real de OTRAS misiones en la testnet compartida-, sessions,
+    proposals, adjudicators). Escritura bloqueada por diseño: POST
+    /api/neurips/sessions exige rol admin; POST
+    /api/neurips/adjudicators exige 5000 de stake mínimo (muy por
+    encima de lo que el faucet permite acumular normalmente).
+
+  Gobernanza de solo lectura:
+    GET /api/constitution                    -> 19 leyes activas
+      (ACCOUNTABILITY, AUDITABILITY, CONSTITUTIONAL_INTEGRITY,
+      HONESTY, LAWFUL_AUTHORITY, NO_CIRCUMVENTION, NON_HARM,
+      PRIVACY_CONSENT, SAFETY_OVERRIDE, y varias PRODE2E_* internas)
+    GET /api/agents/{agentId}/sanctions       -> [] para agentes sin
+      incidentes
+    GET /api/reputation/leaderboard?limit=5   -> agentes de otros
+      usuarios en la misma testnet compartida
+    GET /api/judicial/relay-status            -> healthy/degraded/
+      wedged; coincide con el estado del Fallo A
+
+================================================================================
+13. SUPERFICIE DE API Y HERRAMIENTAS MCP
+================================================================================
+
+  Fecha       | Operaciones REST | Tags/categorías | Tools MCP
+  ------------|-------------------|-------------------|------------
+  2026-07-27  | 439               | 46                 | 113
+  2026-07-28  | 469 (+30)         | 47 (+1)            | 119 (+6)
+
+Las 6 herramientas MCP nuevas (2026-07-28):
+  get_constitutional_review, get_evaluation_sessions,
+  get_invocation_job, get_invocation_receipt, get_node_artifact,
+  get_node_chain_status.
+
+Rutas REST verificadas detrás de 5 de las 6 (cruzando tag/nombre en el
+spec en vivo):
+  get_constitutional_review -> GET/POST /api/deliberation/{proposal_id}/constitutional-review
+  get_evaluation_sessions   -> GET /api/deliberation/sessions/{session_id}/evaluations
+  get_invocation_job        -> GET /api/microservices/jobs/{job_id}
+  get_invocation_receipt    -> GET /api/missions/{mission_id}/nodes/{node_id}/invocations
+  get_node_artifact         -> GET /api/collaboration/{contract_id}/nodes/{node_id}/artifacts
+
+La sexta, get_node_chain_status, NO tiene ruta nueva: envuelve la ruta
+ya existente GET .../collaboration/{contract_id}/nodes/{node_id}/
+chain-commit-payload (confirmado en vivo — misma respuesta 409 cruda
+que el tool MCP normaliza a {"registered":false,"detail":"..."}). Es
+mejora de UX sobre un endpoint existente. Útil para diagnosticar el
+Fallo D sin pasar por los 409 crípticos del Sistema A.
+
+Un heurístico de "¿esta ruta se menciona en algún doc del repo?" para
+intentar aislar las +30 operaciones nuevas dio 364 de 469 como "no
+mencionadas" — muy por encima del delta real, así que es inútil (los
+docs narran flujos, no enumeran cada endpoint uno a uno). No hay forma
+fiable de listar exactamente cuáles son las +25 restantes sin una línea
+base guardada de antes del cambio.
+
+Para diffear cambios futuros de verdad: el repo de origen guarda un
+snapshot completo en docs/agentcity-reference/snapshots/
+openapi-2026-07-28.json. Script de diff (ejecútalo tras clonar):
+
+    curl -sS https://api.agentcity.dev/openapi.json -o /tmp/openapi_now.json
+    node -e "
+    const a = require('./docs/agentcity-reference/snapshots/openapi-2026-07-28.json');
+    const b = require('/tmp/openapi_now.json');
+    const ops = j => new Set(Object.entries(j.paths).flatMap(([p, o]) =>
+      Object.keys(o).filter(m => ['get','post','put','patch','delete'].includes(m)).map(m => m.toUpperCase()+' '+p)));
+    const [oa, ob] = [ops(a), ops(b)];
+    console.log('added:', [...ob].filter(x => !oa.has(x)));
+    console.log('removed:', [...oa].filter(x => !ob.has(x)));
+    "
+
+Índice completo de las 119 tools MCP (nombre+descripción) en
+docs/agentcity-reference/mcp-tools-index.json del repo de origen.
+
+================================================================================
+14. GAPS DE SEGURIDAD ADMITIDOS POR LA PLATAFORMA (SIN TEE)
+================================================================================
+
+AgentCity NO implementa TEE (Trusted Execution Environment / enclaves
+de hardware tipo SGX/TrustZone) en ninguna capa, incluida gobernanza.
+Confirmado por ausencia total de menciones en toda la documentación y
+spec OpenAPI, y por admisión explícita del propio backend vía
+GET /api/config -> runtime.knownGapCodes:
+
+  - shared_runner_no_job_isolation: sin aislamiento garantizado entre
+    jobs (los runners son compartidos).
+  - runner_self_attestation: el propio runner AUTO-DECLARA qué ejecutó
+    (el output_hash del §6.2 lo genera y somete el propio cliente), sin
+    verificación de hardware independiente — es literalmente lo
+    opuesto a lo que un TEE garantizaría.
+  - bid_collateral_not_enforced
+  - reputation_chain_write_unwired
+  - cached_demo_actors (ver §9-10, el hosted demo usa actores
+    pre-cacheados)
+  - relayer_operational_dependency
+  - netx_funding_dependency
+
+El modelo de confianza real es firmas EIP-712 + hashes + votación/
+deliberación on-chain (runtime.requiredGuarantees: blockchainFinality,
+strictExecutionProofs, signedNodeProofs) — no hardware. La "Capa 4
+Guardian" (POST .../nodes/{id}/guard, veredictos FROZEN/CLEAR) es
+detección de anomalías a nivel de aplicación, no un enclave verificando
+la ejecución.
+
+================================================================================
+15. SCRIPTS DEL REPO
+================================================================================
+
+  scripts/agent-city/mission-flow.mjs
+    Flujo completo equipo/colaboración (§5 entero). Resumible vía
+    runs/state.json — si lo relanzas, continúa donde se quedó.
+
+  scripts/agent-city/simple-mission-flow.mjs
+    Flujo mínimo 2 agentes sin equipo/deliberación, para diagnóstico
+    aislado. Estado en runs/simple-state.json, independiente.
+
+  scripts/agent-city/trace-all.mjs
+    Genera un ledger de trazabilidad on-chain completo de todas las
+    wallets del estado (histórico de tx vía Blockscout, clasificadas:
+    registro/stake/escrow/otro).
+    Uso: node scripts/agent-city/trace-all.mjs runs/state.json
+         runs/trazabilidad-completa-<fecha>.md
+
+  scripts/agent-city/collab-node-runner.mjs
+    Sistema A (§6.1), secuencia corregida completa. Uso:
+    node scripts/agent-city/collab-node-runner.mjs <missionId>
+      <contractId> <nodeId1,nodeId2,...>
+
+  scripts/agent-city/neurips-node-runner.mjs
+    Sistema B (§6.2), la ruta que sí llega a Completed de forma
+    fiable. Uso:
+    node scripts/agent-city/neurips-node-runner.mjs <missionId>
+
+  scripts/agent-city/export-keys.mjs
+    Exporta wallets a keystore MetaMask V3 cifrado (§11).
+
+================================================================================
+16. AUTOMATIZACIÓN / VIGILANCIA DIARIA
+================================================================================
+
+En el entorno donde se hizo este trabajo se usó una tarea programada
+(cron 13 9 * * *, ~09:13 UTC diario) que revisa los Fallos B y D cada
+día y auto-completa la misión en cuanto alguno se recupera. Lógica
+mínima a replicar con un systemd timer o cron job en tu homelab:
+
+  1. curl a actions/complete/payload de una misión de prueba propia:
+     200 = Fallo B recuperado, cualquier otra cosa (tras reautenticar
+     si es 401) = sigue roto.
   2. curl a /api/dev/settlement/{missionId}/journal de una misión con
-     nodos ya en Completed → step:"settle_submitted" = Fallo D
-     recuperado.
-  3. Si ambos siguen fallando: no hacer nada, salir en silencio.
-  4. Si alguno se recupera: reautenticar wallets (tokens caducan),
-     relanzar el script correspondiente, regenerar trazabilidad,
-     comitear.
+     nodos ya en Completed: "step":"settle_submitted" en todos =
+     Fallo D recuperado. "binding_wait" = sigue roto.
+  3. Si ambos siguen fallando: no hacer nada, salir en silencio (no
+     comitear, no generar informes vacíos).
+  4. Si alguno se recupera: reautenticar TODAS las wallets del flujo
+     (los tokens caducan), relanzar el script correspondiente
+     (mission-flow.mjs para B; nada manual para D, el worker liquida
+     solo), regenerar trazabilidad (trace-all.mjs), y SOLO ENTONCES
+     comitear/documentar el cambio real (usando siempre
+     contract_status_label, nunca mission.status — ver §8).
+
+Ejemplo de systemd timer para correr el flujo periódicamente (no la
+vigilancia de fallos, solo la ejecución del flujo en sí):
+
+  /etc/systemd/system/agentcity-flow.service
+    [Unit]
+    Description=AgentCity mission flow
+    [Service]
+    Type=oneshot
+    WorkingDirectory=/opt/AgentCity-test
+    ExecStart=/usr/bin/node scripts/agent-city/mission-flow.mjs
+
+  /etc/systemd/system/agentcity-flow.timer
+    [Unit]
+    Description=Ejecutar el flujo AgentCity a diario
+    [Timer]
+    OnCalendar=daily
+    Persistent=true
+    [Install]
+    WantedBy=timers.target
+
+  sudo systemctl enable --now agentcity-flow.timer
 
 ================================================================================
-11. QUÉ NO INTENTAR "ARREGLAR" (SON FALLOS DE BACKEND, NO TUYOS)
+17. PROBLEMAS CONOCIDOS Y SOLUCIÓN (TROUBLESHOOTING)
+================================================================================
+
+  Síntoma                              | Causa                        | Acción
+  --------------------------------------|-------------------------------|----------------------------------
+  signing-payload/eip712-payload ->     | Fallo A / chain-service caído | Reintenta 10x30s con backoff;
+  CIRCUIT_BREAKER_OPEN o 500            | (§7)                          | si sigue caído tras eso, espera
+  --------------------------------------|-------------------------------|----------------------------------
+  TEAM_NOT_READY "Need 5+ accepted      | Equipo con <5 miembros        | Mantén 5+ miembros aceptados
+  members"                              | aceptados                     |
+  --------------------------------------|-------------------------------|----------------------------------
+  NOT_MISSION_PARTICIPANT al pedir el   | Quote no creado por el líder  | Orden estricto: tally -> quote
+  payload del quote                     | del equipo ganador, o aún sin | del líder ganador -> accept
+                                        | ganador (§5.6)                |
+  --------------------------------------|-------------------------------|----------------------------------
+  Propuesta rechazada por ventana       | >600s desde created_at de la  | Empieza misión nueva (§5.4);
+                                        | misión                        | no hay forma de extender la
+                                        |                                | ventana de una misión existente
+  --------------------------------------|-------------------------------|----------------------------------
+  Cuelgues largos de la API (30-60s     | Latencia intermitente de la   | Usa timeout >=120s y reintentos
+  por petición)                         | API pública                   | con backoff en tu cliente HTTP
+  --------------------------------------|-------------------------------|----------------------------------
+  fetch failed detrás de proxy          | Node no usa HTTPS_PROXY por   | Configura el proxy explícitamente
+                                        | sí solo                       | vía undici/ProxyAgent; exporta
+                                        |                                | HTTPS_PROXY y, si hay MITM,
+                                        |                                | NODE_EXTRA_CA_CERTS
+  --------------------------------------|-------------------------------|----------------------------------
+  undici rechaza la petición por header | ethers pone su propio         | Elimina los headers
+  "content-length" al hacer llamadas    | content-length en JSON-RPC,   | content-length/host/connection
+  JSON-RPC con ethers detrás de un      | undici lo rechaza como header | antes de pasar la request a
+  proxy MITM                            | prohibido                     | fetch() (interceptar en
+                                        |                                | ethers.FetchRequest.registerGetUrl)
+  --------------------------------------|-------------------------------|----------------------------------
+  401 "Invalid or expired token" en     | Los tokens JWT caducan (~24h  | Repite challenge -> firma ->
+  cualquier llamada autenticada         | en la práctica)                | wallet-login para esa wallet
+                                        |                                | específica y reintenta
+  --------------------------------------|-------------------------------|----------------------------------
+  422 "Field required: nonce" en        | El body de wallet-login       | Incluye "nonce" explícito en el
+  wallet-login                          | necesita nonce explícito,     | body, no solo dentro del texto
+                                        | no basta con que vaya dentro  | del mensaje SIWE
+                                        | del texto del mensaje SIWE    |
+  --------------------------------------|-------------------------------|----------------------------------
+  BIDDER_NOT_SERVICE_OWNER al pujar     | deploy_package_service sin    | Pasa siempre un apiSchema único
+  por un nodo (Sistema A)               | apiSchema único reutiliza un  | (p.ej. {"unique":"label-"+
+                                        | servicio AJENO                | Date.now()})
+  --------------------------------------|-------------------------------|----------------------------------
+  Nodo atascado permanentemente en      | route_node_task llamado antes | No hay arreglo retroactivo — evita
+  "executing" (Sistema A)               | de close_node_bidding (§6.1,  | el orden equivocado desde el
+                                        | Trampa 1)                     | principio en la próxima misión
+
+================================================================================
+18. QUÉ NO INTENTAR "ARREGLAR" (SON FALLOS DE BACKEND, NO TUYOS)
 ================================================================================
 
   - No intentes parchear/reintentar infinitamente actions/complete
     (Fallo B) — es 500 del servidor, no hay nada que el cliente pueda
     hacer distinto.
-  - No intentes registrar tú mismo un chain_node_id — no existe ningún
-    endpoint/tool que lo permita; es un worker interno de AgentCity.
-  - No confundas mission.status:"completed" con liquidación real (ver
-    trampa en §7).
-  - No asumas que el sistema de colaboración (§6, Sistema A) es un bug
-    tuyo si se queda atascado en "executing" — es una trampa conocida de
-    la plataforma si llamas route_node_task antes de cerrar la puja
-    (close_node_bidding force=true SIEMPRE antes de route_node_task).
+  - No intentes registrar tú mismo un chain_node_id (Fallo D) — no
+    existe ningún endpoint/tool que lo permita; es un worker interno de
+    AgentCity el único que puede hacerlo.
+  - No confundas mission.status:"completed" con liquidación real (§8).
+  - No asumas que el Sistema A (colaboración) atascado en "executing"
+    es un bug tuyo — es la Trampa 1 conocida (§6.1): SIEMPRE
+    close_node_bidding(force=true) ANTES de route_node_task.
   - No gastes tiempo en Investment Vault (Fallo C), gobernanza NeurIPS
-    completa (requiere rol admin + 5000 de stake) ni SDK Compatibility
-    (requiere secreto HMAC del despliegue) contra el backend público —
-    solo son viables con tu propio backend (§12).
+    completa (requiere rol admin + 5000 de stake por adjudicador) ni
+    SDK Compatibility (requiere secreto HMAC del despliegue) contra el
+    backend público — solo son viables con tu propio backend (§19).
+  - No confundas el Hosted Demo (§10) con el flujo normal — si el
+    Fallo E te bloquea ahí, no significa que tu implementación del
+    flujo normal (§5) esté mal.
 
 ================================================================================
-12. PARA IR MÁS ALLÁ: BACKEND PROPIO
+19. PARA IR MÁS ALLÁ: BACKEND PROPIO
 ================================================================================
 
 Si quieres una implementación "completa" sin las restricciones del
-despliegue público compartido (rol admin, stake mínimo de adjudicador,
-secretos HMAC, Investment Vault roto), despliega tu propia instancia del
-backend de AgentCity. El repo está referenciado en
-docs/agentcity-reference/llms.txt (busca el enlace al repo del backend/
-frontend). Con tu propio despliegue desaparecen las restricciones de
-plataforma compartida — pero entonces los "Fallos A-E" de este documento
-ya no aplican (serán tus propios bugs a depurar, no los del despliegue
-público).
+despliegue público compartido (rol admin, stake mínimo de adjudicador
+de 5000, secretos HMAC, Investment Vault roto, límites del Hosted
+Demo), despliega tu propia instancia del backend de AgentCity. El repo
+del backend/frontend está referenciado en
+docs/agentcity-reference/llms.txt del repo de origen (busca el enlace a
+tnkoeu/agent-city-frontend). Con tu propio despliegue desaparecen las
+restricciones de plataforma compartida — pero entonces los Fallos A-E
+de este documento ya NO APLICAN (serán tus propios bugs a depurar en tu
+propio backend, no los del despliegue público de api.agentcity.dev).
+
+En conjunto: el CICLO DE MISIÓN (§5) es reproducible tal cual contra la
+API pública, sin necesidad de backend propio. Los subsistemas de
+INVERSIÓN, GOBERNANZA NEURIPS COMPLETA y SDK COMPATIBILITY sí requieren
+backend propio para una implementación completa real.
 
 ================================================================================
-13. CHECKLIST DE VERIFICACIÓN RÁPIDA
+20. CHECKLIST DE VERIFICACIÓN FINAL
 ================================================================================
 
   [ ] npm install sin errores
   [ ] node scripts/agent-city/mission-flow.mjs corre hasta "apertura de
-      colaboración" sin abortar (puede fallar solo en la sección 10,
-      eso es esperado por el Fallo B)
-  [ ] runs/state.json se generó con wallets + tokens
+      colaboración" (§5.10) sin abortar — puede fallar SOLO en la
+      sección 10 (§5.11), eso es esperado por el Fallo B
+  [ ] runs/state.json se generó con wallets + tokens + chain_agent_id
+      no nulos para cada participante
   [ ] node scripts/agent-city/neurips-node-runner.mjs <missionId> lleva
-      los 3 nodos a "Completed"
+      los 3 nodos a "Completed" (verificar con
+      GET /api/neurips/nodes/{live_node_id})
   [ ] node scripts/agent-city/trace-all.mjs genera el informe de
       trazabilidad sin errores
-  [ ] Confirmaste el estado de los Fallos B/D/E contra el backend en
-      vivo (no asumas que siguen igual que en este documento — vuelve a
-      comprobar, las fechas de arriba son del 2026-08-06)
+  [ ] Confirmaste el estado ACTUAL de los Fallos B/D/E contra el
+      backend en vivo — NO asumas que siguen igual que en este
+      documento (fecha de referencia: 2026-08-06); repite las
+      comprobaciones de §7 antes de dar nada por bueno
+  [ ] Si algún fallo se recuperó, verificaste con
+      contract_status_label (§8), NUNCA con mission.status
 
 ================================================================================
-FIN DEL BRIEFING — para cualquier duda, el detalle completo está en los
-documentos listados en la sección 3, todos dentro del repo clonado.
+FIN DEL BRIEFING.
 ================================================================================
