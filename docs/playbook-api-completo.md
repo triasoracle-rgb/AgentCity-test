@@ -351,6 +351,34 @@ usa el criterio correcto (`contract_status_label` distinto de
 `InProgress`, o balances cambiados); este hallazgo solo documenta por qué
 `mission.status` por sí solo puede inducir a error.
 
+## Actualización 2026-08-05 — misión de referencia #2: el hosted demo oficial sí liquida en cadena
+
+El usuario compartió el detalle de la UI de
+`4aa85111-26ed-469b-95ca-e7bd369cdb5f` ("django__django-13768 direct
+finality"). Verificado en vivo: es un **segundo ejemplo genuino de
+asentamiento completo** (el primero fue `72ae8b85-...`, §"Resumen de
+fallos" fila D) — `contract_status_label: "Resolved"` (estado 5), los 3
+nodos en `GET /api/dev/settlement/{id}/journal` con
+`"step": "settle_submitted"` y `commit_tx_hash`/`settle_tx_hash` reales.
+Ciclo completo en ~15 minutos (`created_at` 02:26 → último nodo
+`settled_at` 02:39, 2026-08-05).
+
+**No es una misión normal — es el hosted demo oficial** (descripción:
+*"public AgentCity direct-mode execution"*; workload `django__django-13768`
+coincide con `GET /api/config` → `runtime.hostedDemo.workloads`,
+`actorMode: "hosted_cached"`, equipos ganadores literalmente llamados
+`direct-... teamA`/`teamB`). Reconfirmado el mismo día que los fallos B y
+D seguían activos para nuestras misiones — este camino "direct-mode"
+evita el cuello de botella de gobernanza (`chain_node_id`) que bloquea el
+flujo normal, probablemente porque los actores/registro ya vienen
+pre-provisionados en vez de pasar por el ciclo completo de deliberación +
+asignación on-chain.
+
+**Valor real**: primer ejemplo con *todas* las secciones de la UI del
+frontend pobladas con datos reales — sirve de plantilla para mapear cada
+sección a su endpoint (detalle completo, con la tabla sección↔endpoint,
+en `docs/exploracion-2026-07-27.md` §"Cuarta actualización").
+
 ## Restricciones de plataforma (no son bugs, son diseño)
 
 | Recurso | Restricción |

@@ -255,6 +255,56 @@ nuestra. La Routine automática ahora vigila
 `prepare_node_chain_commit` directamente, porque es una señal mucho más
 limpia y específica.
 
+### Cuarta actualización (2026-08-05): misión de referencia #2 — el hosted demo oficial SÍ llega a `Resolved`
+
+El usuario compartió el detalle completo de
+`4aa85111-26ed-469b-95ca-e7bd369cdb5f` ("django__django-13768 direct
+finality") tal como lo muestra el frontend
+(`https://agentcity.dev/missions/4aa85111-...`). Verificado en vivo contra
+la API — es un segundo ejemplo genuino de asentamiento completo, distinto
+de la misión de referencia #1 (`72ae8b85-...`, §3 arriba):
+
+- `GET /api/missions/4aa85111-.../onchain` → `contract_status_label:
+  "Resolved"` (estado **5**).
+- `GET /api/dev/settlement/4aa85111-.../journal` → los 3 nodos
+  (`service-analyze`, `service-transform`, `service-validate`) en
+  `"step": "settle_submitted"`, cada uno con `onchain_node_id`,
+  `commit_tx_hash` y `settle_tx_hash` reales y distintos.
+- Ciclo completo (creación → asentamiento) en **~15 minutos**:
+  `created_at: 2026-08-05T02:26:13`, último nodo `settled_at:
+  2026-08-05T02:39:24`.
+
+**Pero no es una misión "normal" como las nuestras — es el hosted demo
+oficial de la plataforma**, y eso importa para no confundirlo con una
+señal de recuperación de los fallos B/D:
+
+- La descripción dice explícitamente *"public AgentCity direct-mode
+  execution"*.
+- El workload (`django__django-13768`) coincide exactamente con
+  `GET /api/config` → `runtime.hostedDemo.workloads`, cuyo
+  `actorMode` es `"hosted_cached"` (actores/equipos pre-cacheados, no
+  agentes registrados por el usuario — los equipos ganadores se llaman
+  literalmente `direct-1785896769372 teamA`/`teamB`).
+- Reconfirmado el mismo día (05/08) que los fallos B y D seguían activos
+  para nuestras misiones vía la Routine automática — así que este camino
+  "direct-mode" evidentemente no pasa por el mismo cuello de botella de
+  gobernanza (`chain_node_id`) que bloquea las misiones normales.
+
+**Utilidad real de esta misión**: no como prueba de recuperación, sino
+como **plantilla de referencia** — el primer ejemplo con todas las
+secciones de la UI pobladas con datos reales, útil para mapear cada
+sección del frontend a su endpoint:
+
+| Sección de la UI | Endpoint |
+|---|---|
+| Estado, título, precio, owner | `GET /api/missions/{id}` |
+| On-Chain: Resolved, dirección del contrato | `GET /api/missions/{id}/onchain` → `contract_status_label` |
+| Execution Branch / DAG nodes / tx de asentamiento | `GET /api/dev/settlement/{id}/journal` |
+| Proposals (coste, DAG, co-firmantes) | `GET /api/teams/mission/{id}/proposals` |
+| Agent Identity (ERC-8004, NFT #) | `GET https://agentcity.dev/8004scan/api/v1/agents/eip155:587:{registryAddress}:{tokenId}` |
+| Sanctions | `GET /api/agents/{agentId}/sanctions` |
+| Investment Vault, Mission Actions | `GET /api/missions/{id}/vault`, `GET /api/missions/{id}/signing-batch` (requieren auth) |
+
 ### Respuesta final a "¿puedo completar una misión con un agente hoy?"
 
 No, por ninguno de los dos caminos — pero ahora con una causa raíz común,

@@ -145,7 +145,8 @@ Exportables a formato MetaMask (keystore V3 cifrado) con
 | `676068cc-05fa-4947-b156-692f1d8a8e7c` | Misión de equipo original (18/07). Usada para vigilar el fallo B (`actions/complete/payload`) | Bloqueada en fallo B — `mission.status: "completed"` pero `contract_status_label: "InProgress"` (ver nota ⚠️ abajo) |
 | `7e3919d8-e0a9-4872-8c3b-0582d21302d3` | Misión con los 3 nodos NeurIPS llevados a `Completed` a mano (27/07). Usada para vigilar el fallo D | Nodos completados, esperando asentamiento (worker se autorepara solo) — mismo `mission.status: "completed"` engañoso |
 | `690efe2a-4604-4700-81f1-46bc028356e0` | Misión simple de 2 agentes (sin equipo), diagnóstico independiente del fallo B | Confirmó que el fallo B es de plataforma, no de la misión de equipo |
-| `72ae8b85-...` (ajena) | Misión de referencia real, completada por otro agente/sesión en la testnet compartida | Usada solo para comparar y descubrir la ruta correcta (§5) |
+| `72ae8b85-...` (ajena) | Misión de referencia #1, completada por otro agente/sesión en la testnet compartida | Usada solo para comparar y descubrir la ruta correcta (§5) |
+| `4aa85111-26ed-469b-95ca-e7bd369cdb5f` (ajena, hosted demo) | Misión de referencia #2 — hosted demo oficial ("direct-mode execution"), `contract_status_label: "Resolved"` real, 3 nodos en `settle_submitted` con tx hashes reales (2026-08-05) | Camino "direct-mode" distinto al flujo normal (actores pre-cacheados); no indica que B/D se hayan recuperado — plantilla de referencia para mapear UI↔endpoints, ver `exploracion-2026-07-27.md` §"Cuarta actualización" |
 
 > ⚠️ **`mission.status` no es fiable como señal de cierre.** Ambas misiones
 > vigiladas muestran `"status": "completed"` en `GET /api/missions/{id}`
