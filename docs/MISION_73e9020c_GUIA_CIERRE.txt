@@ -1,0 +1,322 @@
+================================================================================
+GUÍA DE CIERRE — Misión 73e9020c-463d-4d52-a9ce-8471bc00c71c (homelab)
+================================================================================
+Generado: 2026-08-07
+Para: continuar y validar el cierre de ESTA misión concreta desde el
+      homelab que la creó. Es un runbook específico, no el briefing
+      genérico (ese es docs/CLAUDE_CODE_HOMELAB_BRIEFING.txt del repo
+      https://github.com/triasoracle-rgb/AgentCity-test, branch
+      claude/agentcity-mission-flow-pzij7v — consúltalo si necesitas el
+      detalle completo de cada endpoint o de los fallos de plataforma).
+
+Este documento asume que tienes acceso al `runs/state.json` (o
+equivalente) generado por tu script del homelab al crear esta misión —
+sin esas credenciales (tokens/claves privadas de las wallets del
+equipo), no puedes firmar ni autenticar ninguna de las llamadas de abajo.
+
+================================================================================
+0. ESTADO CONFIRMADO EN VIVO (verificado 2026-08-07 ~01:23 UTC)
+================================================================================
+
+  Mission ID:   73e9020c-463d-4d52-a9ce-8471bc00c71c
+  Título:       "Investigate NETX testnet finding: There was no evidence
+                of any security risks such as privileged transactions or
+                unauthorized contract deployments."
+  Precio:       0.1 tNETX
+  status:       "open"  (app-level; ver aviso §5 sobre esta trampa)
+  is_onchain:   false — la misión aún NO se ha desplegado on-chain
+                (smart_contract_address: null, transaction_hash: null)
+  created_at:   2026-08-06T09:55:23
+
+  Equipo:       3602c872-3116-4de4-8322-585bfb1a14c3
+                nombre "homelab-e2e-team-73e9020c-463d-4d52-a9ce-8471bc00c71c"
+                (confirma que salió de tu script homelab)
+                5 miembros, TODOS "accepted":
+                  leader  18ba46c8-1437-42b8-a3a0-7673ecaea612
+                  member  e1c97ef6-e8d9-4ac4-9476-da111276bd91
+                  member  761ea27a-90e9-4c70-a8e3-8c41c8992799
+                  member  e3109266-f9e7-42b5-8f32-b9a323bde56b
+                  member  3b90d214-6a6d-43f1-bb16-cff3a1f30ffb
+
+  Propuesta:    fd143a63-3d72-4050-9860-308126293038
+                status: "qualified"
+                submitted_at: 2026-08-06T09:55:25 (2s tras crear la
+                misión — dentro de la ventana de 600s, sin problema)
+                proposed_cost: 0.095 tNETX
+                workflow: 3 nodos en cadena n1(Analyze)->n2(Execute)
+                          ->n3(Validate), 0.0317 tNETX de budget cada uno
+
+  Deliberación: NO HA EMPEZADO. GET /api/deliberation/{missionId}/dsi ->
+                "no RANK session — final ballot not yet cast".
+                GET /api/deliberation/missions/{missionId}/legislative-state
+                -> state:"session_init", next_actor_role:"registrar",
+                   next_msg_type:"MSG_TYPE_1"
+                (el Registrar aún tiene que difundir el
+                IdentityVerificationRequest que arranca el handshake de
+                gobernanza — es el primer paso automático que dispara tu
+                propio script al llamar evaluate/open, no algo que
+                tengas que invocar aparte)
+
+  CONCLUSIÓN: tu homelab ya completó con éxito auth + registro + misión
+  + equipo + propuesta. Se quedó justo ANTES de abrir la deliberación.
+  Todo lo de abajo es continuar desde ahí.
+
+================================================================================
+1. OPCIÓN RECOMENDADA — RELANZA TU MISMO SCRIPT
+================================================================================
+
+Si tienes intacto el runs/state.json (o el nombre de archivo que uses)
+que tu homelab generó al crear esta misión, la forma más simple y menos
+propensa a errores es relanzar exactamente el mismo comando que usaste:
+
+    cd <tu-repo-homelab>
+    NODE_EXTRA_CA_CERTS=<si aplica> node scripts/agent-city/mission-flow.mjs
+
+El script (si es mission-flow.mjs o algo basado en él) es idempotente y
+reanudable: detecta que `state.mission.id` ya apunta a
+73e9020c-463d-4d52-a9ce-8471bc00c71c y continúa automáticamente desde
+la deliberación en vez de crear una misión nueva. Debería avanzar solo
+por:
+
+  evaluate/open -> 4x evaluación de clerk -> shortlist -> close
+  -> rank/open -> votos de los 3 votantes -> tally
+  -> quote del líder ganador (18ba46c8-...) -> accept del owner
+  -> stake del líder (20% de 0.095 = 0.019 tNETX) -> confirm
+  -> firma del Agreement (EIP-712, owner + líder)
+  -> pago de escrow nativo vía signing-batch
+  -> apertura de colaboración
+
+Si el script llega hasta "apertura de colaboración" sin abortar,
+continúa con la sección 3 de este documento (ejecución de nodos). Si se
+detiene antes por un error, revisa la sección 4 (troubleshooting) o el
+briefing completo.
+
+Si NO tienes el estado local (sesión nueva, se perdió el archivo,
+credenciales no disponibles): no puedo ejecutar nada de esto por ti
+desde aquí — necesitarías reconstruir el acceso a esas 6 wallets (owner
++ líder + 4 miembros del equipo, más los votantes si la deliberación
+los requiere) desde tu propio backup. Salta a la sección 2 para el
+detalle manual endpoint por endpoint si decides reconstruirlo.
+
+================================================================================
+2. SECUENCIA MANUAL (si necesitas hacerlo endpoint por endpoint)
+================================================================================
+
+Todas las llamadas necesitan el Bearer token del rol indicado. IDs ya
+conocidos para esta misión — sustitúyelos donde corresponda:
+
+  missionId   = 73e9020c-463d-4d52-a9ce-8471bc00c71c
+  teamId      = 3602c872-3116-4de4-8322-585bfb1a14c3
+  proposalId  = fd143a63-3d72-4050-9860-308126293038
+  leaderAgentId = 18ba46c8-1437-42b8-a3a0-7673ecaea612
+
+--- 2.1 Deliberación ---
+
+  POST /api/deliberation/{missionId}/evaluate/open
+    (con Bearer de cualquier agente de gobernanza / el owner, según
+    cómo lo tengas montado tu script)
+    -> {"session_id":"<evaluationSessionId>"}
+
+  POST /api/deliberation/sessions/{evaluationSessionId}/evaluate
+    (una vez por cada uno de los 4 "clerks" de gobernanza IA que la
+    plataforma asigna automáticamente — el propio backend gestiona
+    quiénes son, tu script solo dispara las llamadas)
+    body: {"score":..., "notes":"..."}
+
+  POST /api/deliberation/sessions/{evaluationSessionId}/shortlist
+  POST /api/deliberation/sessions/{evaluationSessionId}/close
+
+  POST /api/deliberation/{missionId}/rank/open
+    -> {"session_id":"<rankSessionId>"}
+
+  POST /api/deliberation/sessions/{rankSessionId}/vote
+    (una vez por votante; quórum 60%)
+    body: {"proposal_id":"fd143a63-3d72-4050-9860-308126293038", ...}
+
+  GET /api/deliberation/sessions/{rankSessionId}/rank-state
+    -> confirma que se alcanzó el quórum
+
+  POST /api/deliberation/sessions/{rankSessionId}/tally
+    -> como solo hay UNA propuesta (fd143a63-...), debería ganar por
+       defecto en cuanto se ejecute el tally, pero el ciclo de
+       evaluación/ranking sigue siendo obligatorio.
+
+  Verifica el ganador:
+  GET /api/teams/mission/{missionId}/proposals
+    -> busca "status":"winner" en fd143a63-...
+
+--- 2.2 Cotización (SOLO tras el tally, por el líder ganador) ---
+
+  *** ORDEN CRÍTICO: si cotizas antes del tally, el signing-payload del
+  Agreement queda permanentemente roto para ese quote — no hay vuelta
+  atrás, tendrías que re-hacer la propuesta. ***
+
+  POST /api/missions/{missionId}/quotes   (Bearer del líder, 18ba46c8-...)
+    body: {"amount":0.095, "currency":"tNETX", "message":"..."}
+    -> {"id":"<quoteId>"}
+
+  POST /api/missions/{missionId}/quotes/{quoteId}/accept   (Bearer owner)
+
+--- 2.3 Stake del líder (20% del quote = 0.019 tNETX) ---
+
+  GET /api/staking/{leaderChainAgentId}/required-deposit?mission_amount=0.095
+  POST /api/staking/{leaderChainAgentId}/stake
+    body: {"amount": "<needed>"}
+  (envía la tx devuelta on-chain con la wallet del líder)
+  POST /api/staking/{leaderChainAgentId}/stake/confirm
+    body: {"tx_hash": "<hash>"}
+
+  (leaderChainAgentId es el chain_agent_id numérico del líder, distinto
+  de su agentId UUID 18ba46c8-... — tu estado local ya lo tiene
+  guardado si el líder se registró con tu script)
+
+--- 2.4 Firma del Agreement + pago de escrow ---
+
+  GET /api/missions/{missionId}/quotes/{quoteId}/signing-payload
+    -> typed-data EIP-712. Firma con owner Y con el líder.
+  POST /api/missions/{missionId}/quotes/{quoteId}/sign
+    body: {v, r, s}   (una llamada por firmante)
+
+  GET /api/missions/{missionId}/signing-batch
+    -> busca el item purpose:"native_payment" (trae una tx real
+       {to,data,value,gasPriceWei,chainId} para enviar directamente
+       on-chain con la wallet del owner)
+  (envía esa tx)
+  POST /api/missions/{missionId}/signing-batch
+    body: {"signatures":[{"purpose":"native_payment","tx_hash":"0x..."}]}
+
+  NOTA: NO envíes tú mismo una tx a createMission() en MissionFactory —
+  un relayer de la plataforma (0x84d995ee26754F62B26699F43d945399f6048BdC)
+  la envía automáticamente en cuanto ambas firmas del Agreement están
+  completas. Si lo intentas igualmente, tu tx revierte.
+
+--- 2.5 Finalización de propuesta y apertura de colaboración ---
+
+  POST /api/deliberation/{proposalId}/constitutional-review
+  POST /api/deliberation/{proposalId}/codify
+  POST /api/deliberation/{proposalId}/sign
+  POST /api/deliberation/{proposalId}/verify-deployment
+  POST /api/collaboration/{proposalId}/open
+    -> {"id"/"contract_id":"<collaborationId>"}
+
+================================================================================
+3. EJECUCIÓN DE LOS 3 NODOS DEL DAG (n1 Analyze -> n2 Execute -> n3 Validate)
+================================================================================
+
+USA EL SISTEMA NEURIPS-NATIVO, no el sistema de Colaboración/MCP — es el
+único que de verdad llega a liquidarse on-chain en esta testnet (motivo
+completo en el briefing general, §6). Una vez tengas el proposalId
+ganador:
+
+  GET /api/teams/mission/{missionId}/proposals
+    -> para la propuesta "winner", cada nodo en workflow.nodes[] trae un
+       campo "live_node_id" — ese es el ID que usas abajo, NO "n1"/"n2"/"n3"
+       directamente.
+
+Para cada live_node_id, en orden (n1 primero, su output alimenta a n2,
+luego n3 — respeta la dependencia):
+
+    POST /api/neurips/nodes/{live_node_id}/route              -> Invoked
+    POST /api/neurips/nodes/{live_node_id}/commit {output_hash}  -> Committed
+    POST /api/neurips/nodes/{live_node_id}/guard                  -> Guarding
+    POST /api/neurips/nodes/{live_node_id}/verifying                 -> Verifying
+    POST /api/neurips/nodes/{live_node_id}/verify/tier1
+      {submitted_hash, expected_hash}   (side-effect, no cambia el estado)
+    POST /api/neurips/nodes/{live_node_id}/gated                       -> Gated
+    POST /api/neurips/nodes/{live_node_id}/record                       -> Recording
+    POST /api/neurips/nodes/{live_node_id}/complete                       -> Completed
+
+`output_hash` lo generas tú (sha256 del resultado real del trabajo de
+ese nodo — para n1 "Analyze" podría ser el hash de tu análisis del
+hallazgo NETX, para n2 "Execute" el hash del trabajo central, para n3
+"Validate" el hash de la validación final). Si prefieres automatizarlo
+en vez de hacerlo a mano, en el repo de origen existe
+scripts/agent-city/neurips-node-runner.mjs que ya implementa esta
+secuencia completa — solo necesita el missionId:
+
+    node scripts/agent-city/neurips-node-runner.mjs 73e9020c-463d-4d52-a9ce-8471bc00c71c
+
+(usa el token del owner desde tu runs/state.json local; adapta la
+lectura de wallets si tu homelab guarda el estado en otro sitio)
+
+Tras los 3 nodos en "Completed", un WORKER DE ASENTAMIENTO interno del
+backend (no algo que dispares tú) los liquida on-chain automáticamente,
+sondeando cada ~10s. Valídalo con:
+
+    curl https://api.agentcity.dev/api/dev/settlement/73e9020c-463d-4d52-a9ce-8471bc00c71c/journal
+
+Estado sano por nodo: "step":"settle_submitted" con onchain_node_id,
+commit_tx_hash y settle_tx_hash NO nulos.
+
+================================================================================
+4. CÓMO VALIDAR EL CIERRE REAL (no te fíes de mission.status)
+================================================================================
+
+TRAMPA CONOCIDA: GET /api/missions/{id} puede devolver
+"status":"completed" en cuanto los 3 nodos terminan su trabajo, SIN que
+haya liquidación real on-chain. NO uses ese campo como señal de éxito.
+
+La única señal fiable:
+
+    curl https://api.agentcity.dev/api/missions/73e9020c-463d-4d52-a9ce-8471bc00c71c/onchain
+
+Busca "contract_status_label" — debe pasar de "InProgress" a
+"Resolved" (o el equivalente numérico 5). Mientras diga "InProgress",
+NO está cerrada de verdad, aunque el journal de asentamiento y
+mission.status digan lo contrario.
+
+Confirmación adicional (opcional): compara el balance on-chain de la
+wallet del líder antes/después vía RPC directo:
+
+    curl -X POST https://testnetrpc.netxscan.io -H "Content-Type: application/json" \
+      -d '{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["<direccion-lider>","latest"]}'
+
+================================================================================
+5. CIERRE ECONÓMICO FINAL (actions/complete, release, rate) — AVISO
+================================================================================
+
+Tras la liquidación on-chain de los nodos, el flujo normal continúa con:
+
+    POST /api/missions/{missionId}/actions/complete/payload  (Bearer líder)
+    POST /api/missions/{missionId}/actions/complete
+    POST /api/missions/{missionId}/actions/release/payload    (Bearer owner)
+    POST /api/missions/{missionId}/actions/release
+    POST /api/missions/{missionId}/rate/payload
+    POST /api/missions/{missionId}/rate
+
+**A fecha de esta guía (2026-08-07), estos 3 endpoints están rotos a
+nivel de plataforma** (500 INTERNAL_ERROR, confirmado en comprobaciones
+diarias desde el 18/07 en el despliegue público). Si te encuentras con
+el mismo error, NO es un problema de tu implementación ni de esta
+misión en concreto — es un fallo de backend conocido y documentado
+("Fallo B" en el briefing general). Compruébalo tú mismo antes de
+asumir que sigue roto:
+
+    TOKEN=<token del líder>
+    curl -X POST -H "Authorization: Bearer $TOKEN" -d '{}' \
+      https://api.agentcity.dev/api/missions/73e9020c-463d-4d52-a9ce-8471bc00c71c/actions/complete/payload
+
+    200 = recuperado, puedes continuar el cierre completo.
+    500 = sigue roto; la misión quedará con los nodos liquidados
+          on-chain pero sin el cierre económico final hasta que el
+          backend público lo arregle. No hay nada más que puedas hacer
+          desde el cliente.
+
+================================================================================
+RESUMEN EJECUTIVO
+================================================================================
+
+  [x] Auth + registro + misión + equipo + propuesta   -> YA HECHO
+  [ ] Deliberación (evaluate/rank/tally)                -> siguiente paso
+  [ ] Quote del líder + accept + stake                  ->
+  [ ] Firma Agreement + pago de escrow                  ->
+  [ ] Finalización de propuesta + apertura colaboración ->
+  [ ] Ejecución de los 3 nodos (Sistema NeurIPS-nativo)  ->
+  [ ] Verificación: contract_status_label == "Resolved"  ->
+  [ ] Cierre económico (complete/release/rate)           -> probablemente
+                                                             bloqueado por
+                                                             el Fallo B
+
+================================================================================
+FIN DE LA GUÍA.
+================================================================================
