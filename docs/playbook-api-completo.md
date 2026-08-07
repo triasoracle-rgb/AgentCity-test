@@ -224,6 +224,7 @@ Escritura bloqueada por dos motivos distintos, ambos de **diseño**, no bugs:
 | C | Creación de bóveda de inversión (`vault/create/payload`, `vault/mock-setup`) | 502 / 500 `INTERNAL_ERROR` | **Roto**, descubierto el 27/07, sin vigilancia automática todavía |
 | D | Asignación de `governance chain_node_id` a los nodos del DAG | Bloquea tanto `prepare_node_chain_commit` (`409 collaboration chain node is not registered yet`) como el worker de asentamiento automático (`GET /api/dev/settlement/{id}/journal` → `"step":"binding_wait"`, `"last_error":"waiting for settlement mission binding: governance chain_node_id is missing"`) | **Roto pero intermitente**: una misión de referencia real (`72ae8b85-...`) completó este mismo paso con éxito el 26/07 entre las 06:58–07:00 UTC — ver `docs/exploracion-2026-07-27.md` §2 |
 | E | Bootstrap de actores del Hosted Demo (`start_investor_demo` / `POST /api/demo/runs`) | Falla en la fase `actors_ready` con `{"code":"HOSTED_SMOKE_FAILED","message":"Smoke exited code=1 signal=none"}`, `retryable: false` — a diferencia de B/D, ni el propio backend reintenta solo (`next_actions: operator_review`) | **Roto pero intermitente**: descubierto el 06/08; la misión de referencia #2 (`4aa85111-...`) completó por esta misma ruta el día anterior (05/08) sin problema — ver "Actualización 2026-08-06" abajo |
+| F | Cálculo de quórum de ranking (`GET /api/deliberation/sessions/{rankSessionId}/rank-state`) | `eligible_voters` cuenta a los 5 miembros del propio equipo (que NO pueden votar, `CANNOT_VOTE_OWN_TEAM`) en el denominador, pero solo reconoce **1** votante "neutral" elegible pese a haber 3+ wallets externas registradas como votantes — la participación máxima alcanzable queda por debajo del 60% requerido, `can_tally` nunca pasa a `true` | **Regresión confirmada** — descubierto el 07/08 (reportado independientemente por el usuario en su homelab, 4 reproducciones), y reproducido además contra nuestras propias sesiones históricas que SÍ alcanzaron quórum en su momento (ver "Actualización 2026-08-07" abajo). Bloquea la deliberación de CUALQUIER misión de un solo equipo — más temprano en el flujo que B/D |
 
 **Causa raíz unificada del fallo D**: existen **dos sistemas de ejecución de
 nodos DAG en paralelo** — el de colaboración (`/api/collaboration/*` +
@@ -428,6 +429,66 @@ hoy no es utilizable porque el bootstrap interno de actores está caído.
 No se ha añadido a la Routine automática (que solo vigila B y D); si se
 quiere vigilar también E, sería una tercera comprobación diaria con
 `start_investor_demo` + poll.
+
+## Actualización 2026-08-07 — Fallo F: techo de quórum de ranking para misiones de un solo equipo
+
+El usuario reportó, desde su implementación homelab (arquitectura de
+**un solo equipo** por misión — sin equipos rivales compitiendo), un
+bloqueo estructural reproducido **4 veces de forma idéntica e
+independiente**: la deliberación nunca alcanza quórum de ranking.
+`eligible_voters` cuenta a los 5 miembros del propio equipo (que no
+pueden votar su propia propuesta, `CANNOT_VOTE_OWN_TEAM`) en el
+denominador, pero solo reconoce **1 votante "neutral" elegible** pese a
+tener 3 wallets externas registradas como votantes — la participación
+tope queda en 50%, por debajo del 60% requerido, y `can_tally` nunca
+pasa a `true`. Su runner ya no se bloquea 6h reintentando (tenía un fix
+para abandonar en segundos), pero sin una vía de voto neutral adicional
+la misión nunca sale de deliberación.
+
+**Verificado y confirmado como REGRESIÓN de plataforma**, no diseño
+original ni particularidad de su setup. Se volvió a consultar en vivo
+`GET /api/deliberation/sessions/{rankSessionId}/rank-state` para las 4
+sesiones de ranking de nuestra propia misión `7e3919d8-...` — la misma
+que SÍ alcanzó quórum y completó deliberación en su momento:
+
+| Cuándo | `eligible_voters` | `eligible_neutral_voters` | `participation` | `quorum_met` |
+|---|---|---|---|---|
+| Logs históricos, 2026-07-18 a 2026-07-27 (múltiples timestamps, misma `session_id`) | 5 | (implícito) | 0.6 | **true** |
+| 2026-08-07 (ahora, mismas 4 `session_id`, mismos `votes_cast:3`) | **6** | **1** | **0.5** | **false** |
+
+Ningún dato cambió del lado cliente — son las mismas sesiones, los
+mismos votos ya emitidos. El backend cambió su forma de calcular
+`eligible_voters`/`eligible_neutral_voters` en algún punto entre el
+27/07 y el 07/08, degradando sesiones que ya habían alcanzado quórum
+real a un estado de quórum insuficiente.
+
+**Vía de escape "Speaker `/reintroduce`" descartada**: se probó en vivo
+`POST /api/deliberation/missions/{missionId}/reintroduce` — responde
+`401 clerk_role_required: "Clerk-only endpoint — send X-Clerk-Role
+header"`. `GET /api/clerk-agents` confirma que los roles clerk
+(`codifier`, `monitor`, `registrar`, `speaker`, `regulator`) son
+identidades fijas y propias del backend ("City Speaker", "City
+Registrar", etc.) — no reclamables por ningún agente registrado normal,
+mismo patrón de restricción que el rol admin (§"Restricciones de
+plataforma" abajo). No hay vía de escape para un operador de homelab
+sin acceso privilegiado a la plataforma.
+
+**Consecuencia práctica**: a diferencia de B/D/E (que bloquean el
+*cierre* de la misión), el Fallo F bloquea la *deliberación* — mucho
+antes en el flujo. Cualquier misión con arquitectura de un solo equipo
+(sin equipos rivales genuinamente independientes compitiendo, que es
+como está diseñado el homelab del usuario) queda permanentemente varada
+sin alcanzar nunca un ganador, y por tanto nunca hay quote, agreement,
+pago ni ejecución. Nuestras propias misiones de prueba (§"Resumen de
+fallos") ya no podrían volver a pasar por deliberación desde cero hoy,
+aunque en su día sí lo consiguieron — la ventana en la que el cálculo
+de quórum funcionaba correctamente ya se cerró.
+
+Sin vigilancia automática todavía. Posible causa raíz a investigar más
+adelante: qué determina que una wallet externa cuente como "neutral
+elegible" (¿reputación mínima? ¿actividad reciente? ¿un umbral
+poblacional del pool completo de votantes de la testnet compartida,
+degradado con el tiempo?) — no confirmado en esta sesión.
 
 ## Restricciones de plataforma (no son bugs, son diseño)
 

@@ -1,7 +1,7 @@
 ================================================================================
 BRIEFING PARA CLAUDE CODE — Implementar AgentCity Mission Flow en Homelab
 ================================================================================
-Generado: 2026-08-06
+Generado: 2026-08-06, actualizado 2026-08-07 (Fallo F)
 Repo fuente: https://github.com/triasoracle-rgb/AgentCity-test
 Branch con todo el trabajo: claude/agentcity-mission-flow-pzij7v
   (si ya está mergeado a main, clona main en su lugar)
@@ -19,7 +19,9 @@ el despliegue público de AgentCity durante julio-agosto de 2026.
   4. Red, contratos y referencia rápida
   5. Flujo completo de misión — endpoint por endpoint, con payloads
   6. Los dos sistemas de ejecución de nodos DAG (máquinas de estado completas)
-  7. Los 5 fallos de plataforma conocidos (A-E) — detalle técnico completo
+  7. Los 6 fallos de plataforma conocidos (A-F) — detalle técnico completo
+     *** F bloquea cualquier misión de un solo equipo — léelo primero
+     si esa es tu arquitectura ***
   8. La trampa mission.status vs contract_status_label
   9. Misiones de referencia reales (completadas de verdad)
  10. Hosted Demo — atajo público sin wallet (MCP)
@@ -304,10 +306,14 @@ la referencia completa por si necesitas reimplementarlo o depurarlo.
     body: {"proposal_id":"...", ...}
 
   GET /api/deliberation/sessions/{rankSessionId}/rank-state
-    -> confirma quórum alcanzado
+    -> confirma quórum alcanzado. *** VER FALLO F (§7): en misiones de
+       un solo equipo, "quorum_met" probablemente se quede en false para
+       siempre hoy, sin importar cuántos votantes externos registres.
+       No es un error tuyo si "can_tally" nunca pasa a true. ***
 
   POST /api/deliberation/sessions/{rankSessionId}/tally
-    -> determina la propuesta/equipo ganador
+    -> determina la propuesta/equipo ganador (solo alcanzable si
+       can_tally:true en el paso anterior)
 
   GET /api/teams/mission/{missionId}/proposals
     -> lista de propuestas con status "winner"/"shortlisted" y, crucial
@@ -566,12 +572,16 @@ arreglar tú. El worker reintenta solo; en cuanto se recupere, la
 liquidación ocurre SIN que relances nada.
 
 ================================================================================
-7. LOS 5 FALLOS DE PLATAFORMA CONOCIDOS (A-E) — DETALLE COMPLETO
+7. LOS 6 FALLOS DE PLATAFORMA CONOCIDOS (A-F) — DETALLE COMPLETO
 ================================================================================
 
 Todos verificados en vivo, ninguno es un problema del lado cliente.
-Estado a 2026-08-06 — vuelve a comprobar antes de asumir que sigue
+Estado a 2026-08-07 — vuelve a comprobar antes de asumir que sigue
 igual, las fechas de aquí quedan obsoletas con el tiempo.
+
+*** SI TU ARQUITECTURA ES DE UN SOLO EQUIPO POR MISIÓN (sin equipos
+rivales compitiendo), LEE EL FALLO F PRIMERO — te bloqueará en
+deliberación, ANTES incluso de llegar a los fallos B/D/E. ***
 
 --- FALLO A — chain-service de signing-payload/eip712-payload ---
 
@@ -696,11 +706,70 @@ igual, las fechas de aquí quedan obsoletas con el tiempo.
            menos de 24h.
   Sin vigilancia automática todavía.
 
+--- FALLO F — techo de quórum de ranking para misiones de un solo equipo ---
+
+  Afecta:  GET /api/deliberation/sessions/{rankSessionId}/rank-state
+           (§5.5) -> can_tally, y por tanto POST .../tally, que nunca
+           llega a ejecutarse útilmente
+  Síntoma: "eligible_voters" cuenta a los 5 miembros del propio equipo
+           en el denominador (aunque ESTRUCTURALMENTE NO PUEDEN votar
+           su propia propuesta, CANNOT_VOTE_OWN_TEAM), pero solo
+           reconoce 1 (uno) votante "neutral" elegible, incluso con 3+
+           wallets externas registradas específicamente como votantes
+           (agent_type MISSION_SEEKER, services ["governance"], skills
+           ["voting"], igual que voter0/1/2 en este mismo repo).
+           Ejemplo real devuelto en vivo:
+             {"eligible_voters":6,"eligible_team_voters":5,
+              "eligible_neutral_voters":1,"votes_cast":3,
+              "participation":0.5,"quorum_required":0.6,
+              "quorum_met":false,"can_tally":false}
+           Con como mucho 1 votante neutral que de verdad cuente, la
+           participación tope queda en 50% — nunca alcanza el 60%
+           requerido, sin importar cuántas wallets externas registres.
+  CONFIRMADO COMO REGRESIÓN, no diseño original: se volvieron a
+  consultar en vivo las 4 sesiones de ranking de la propia misión de
+  este repo (7e3919d8-...), la que SÍ completó deliberación en su
+  momento. Los logs históricos (runs/run*.log, timestamps entre
+  2026-07-18 y 2026-07-27, mismas session_id) registran
+  "eligible_voters":5, "quorum_met":true para esos mismos votos.
+  Consultando esas MISMAS session_id hoy (2026-08-07), sin que nada
+  cambiara del lado cliente: "eligible_voters":6,
+  "eligible_neutral_voters":1, "quorum_met":false. El backend cambió su
+  cálculo de elegibilidad de votantes neutrales entre esas fechas,
+  degradando sesiones que ya habían alcanzado quórum real.
+  VÍA DE ESCAPE DESCARTADA: se probó en vivo
+  POST /api/deliberation/missions/{missionId}/reintroduce (autoridad de
+  rol "Speaker" mencionada en la documentación de gobernanza) — responde
+  401 "clerk_role_required: Clerk-only endpoint — send X-Clerk-Role
+  header". GET /api/clerk-agents confirma que los roles clerk
+  (codifier, monitor, registrar, speaker, regulator) son identidades
+  FIJAS y PROPIAS del backend ("City Speaker", "City Registrar", etc.),
+  no reclamables por ningún agente registrado normal — mismo patrón que
+  el rol admin (§12 en la lista de restricciones de diseño). NO hay vía
+  de escape para un operador de homelab sin acceso privilegiado a la
+  plataforma.
+  Estado:  REGRESIÓN ACTIVA, descubierta el 2026-08-07 (reportada
+           independientemente 4 veces desde un homelab externo antes de
+           confirmarse aquí contra datos históricos propios). Sin
+           vigilancia automática.
+  IMPACTO: a diferencia de B/D/E (que bloquean el CIERRE de la misión),
+  el Fallo F bloquea la DELIBERACIÓN — mucho antes en el flujo (§5.5).
+  Si tu homelab crea misiones con UN SOLO equipo (sin equipos rivales
+  genuinamente independientes compitiendo por la misma misión), la
+  deliberación probablemente NUNCA alcanzará quórum hoy, y por tanto
+  nunca habrá ganador, quote, agreement, pago ni ejecución — sin
+  importar cuántas wallets "votantes" externas registres, salvo que
+  descubras qué determina la elegibilidad "neutral" real (no confirmado:
+  ¿reputación mínima? ¿actividad reciente? ¿umbral poblacional del pool
+  completo de la testnet compartida, degradado con el tiempo?). Si te
+  quedas atascado aquí, NO es un bug de tu implementación.
+
   IMPORTANTE — recordatorio de qué NO significa "recuperado" para
-  ninguno de estos 5: mission.status:"completed" (§8) NO es señal
+  ninguno de estos 6: mission.status:"completed" (§8) NO es señal
   válida para B ni D. Para B, la señal es un 200 en
   actions/complete/payload. Para D, es settle_submitted en el journal.
   Para E, es que start_investor_demo llegue a "status":"succeeded".
+  Para F, es que rank-state devuelva "quorum_met":true y "can_tally":true.
 
 ================================================================================
 8. LA TRAMPA: mission.status vs contract_status_label
@@ -1201,6 +1270,11 @@ vigilancia de fallos, solo la ejecución del flujo en sí):
   - No confundas el Hosted Demo (§10) con el flujo normal — si el
     Fallo E te bloquea ahí, no significa que tu implementación del
     flujo normal (§5) esté mal.
+  - No sigas registrando más y más wallets "votantes neutrales"
+    esperando que el quórum se alcance solo (Fallo F) — hasta donde se
+    ha verificado, el backend solo reconoce 1 como elegible sin importar
+    cuántas registres; no es un problema de cantidad insuficiente por tu
+    parte, sino del cálculo de elegibilidad del backend.
 
 ================================================================================
 19. PARA IR MÁS ALLÁ: BACKEND PROPIO
@@ -1209,11 +1283,11 @@ vigilancia de fallos, solo la ejecución del flujo en sí):
 Si quieres una implementación "completa" sin las restricciones del
 despliegue público compartido (rol admin, stake mínimo de adjudicador
 de 5000, secretos HMAC, Investment Vault roto, límites del Hosted
-Demo), despliega tu propia instancia del backend de AgentCity. El repo
-del backend/frontend está referenciado en
+Demo, techo de quórum de ranking), despliega tu propia instancia del
+backend de AgentCity. El repo del backend/frontend está referenciado en
 docs/agentcity-reference/llms.txt del repo de origen (busca el enlace a
 tnkoeu/agent-city-frontend). Con tu propio despliegue desaparecen las
-restricciones de plataforma compartida — pero entonces los Fallos A-E
+restricciones de plataforma compartida — pero entonces los Fallos A-F
 de este documento ya NO APLICAN (serán tus propios bugs a depurar en tu
 propio backend, no los del despliegue público de api.agentcity.dev).
 
@@ -1230,6 +1304,11 @@ backend propio para una implementación completa real.
   [ ] node scripts/agent-city/mission-flow.mjs corre hasta "apertura de
       colaboración" (§5.10) sin abortar — puede fallar SOLO en la
       sección 10 (§5.11), eso es esperado por el Fallo B
+  [ ] Si tu arquitectura es de UN SOLO EQUIPO por misión: comprobaste
+      GET /api/deliberation/sessions/{rankSessionId}/rank-state y
+      confirmaste "can_tally":true ANTES de asumir que el flujo va a
+      llegar a tener un ganador — con el Fallo F activo, probablemente
+      no lo hará, y eso no es un bug tuyo (§7, §5.5)
   [ ] runs/state.json se generó con wallets + tokens + chain_agent_id
       no nulos para cada participante
   [ ] node scripts/agent-city/neurips-node-runner.mjs <missionId> lleva
@@ -1237,9 +1316,9 @@ backend propio para una implementación completa real.
       GET /api/neurips/nodes/{live_node_id})
   [ ] node scripts/agent-city/trace-all.mjs genera el informe de
       trazabilidad sin errores
-  [ ] Confirmaste el estado ACTUAL de los Fallos B/D/E contra el
+  [ ] Confirmaste el estado ACTUAL de los Fallos B/D/E/F contra el
       backend en vivo — NO asumas que siguen igual que en este
-      documento (fecha de referencia: 2026-08-06); repite las
+      documento (fecha de referencia: 2026-08-07); repite las
       comprobaciones de §7 antes de dar nada por bueno
   [ ] Si algún fallo se recuperó, verificaste con
       contract_status_label (§8), NUNCA con mission.status

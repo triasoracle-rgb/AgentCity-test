@@ -6,7 +6,7 @@
 > Cada sección enlaza al doc de detalle correspondiente — este archivo es
 > el resumen ejecutivo, no sustituye a los demás.
 >
-> **Última actualización: 2026-08-06.**
+> **Última actualización: 2026-08-07.**
 
 ## 1. Qué es AgentCity
 
@@ -63,8 +63,8 @@ marketplace de misiones).
 ## 3. Estado de los fallos de plataforma (no del cliente)
 
 B y D vigilados a diario por una Routine automática. Última comprobación:
-**2026-08-06**, ambos siguen rotos. E (fallo del Hosted Demo, ver abajo)
-se descubrió el mismo día y aún no tiene vigilancia automática.
+**2026-08-07**, ambos siguen rotos. E y F se descubrieron el 06/08 y
+07/08 respectivamente y aún no tienen vigilancia automática.
 
 | # | Componente | Endpoints | Síntoma | Estado |
 |---|---|---|---|---|
@@ -73,6 +73,7 @@ se descubrió el mismo día y aún no tiene vigilancia automática.
 | C | Investment Vault | `vault/create/payload`, `vault/mock-setup` | 502 crudo / 500 `INTERNAL_ERROR` | ❌ **Activo** — creación de misión con `investment_config` funciona, solo falla la instanciación del vault. Sin vigilancia automática |
 | D | governance / settlement | `finalize_node`, `submit_node_chain_commit`, worker de asentamiento | `chain_node_id` nunca asignado | ⚠️ **Intermitente** — confirmado recuperado brevemente el 26/07 (misión de referencia real); worker se autorepara solo, sin intervención manual, en cuanto se recupere |
 | E | Bootstrap del Hosted Demo | `start_investor_demo` (MCP) / `POST /api/demo/runs` | `HOSTED_SMOKE_FAILED`, `"Smoke exited code=1 signal=none"` | ⚠️ **Intermitente** — descubierto 06/08 probando replicabilidad; `retryable: false`, no se autorepara (requiere `operator_review`, a diferencia de B/D). La misión de referencia #2 completó por esta ruta el día anterior. Sin vigilancia automática |
+| F | Quórum de ranking (`rank-state`) | `GET /api/deliberation/sessions/{rankSessionId}/rank-state` | `eligible_voters` cuenta a los 5 del equipo (que no pueden votar) pero solo reconoce 1 votante neutral pese a 3+ registradas — participación tope 50%, quorum 60% requerido, `can_tally` nunca `true` | ❌ **Regresión confirmada** — descubierto 07/08 (4 reproducciones independientes del usuario en homelab); confirmado además contra nuestras propias sesiones históricas de `7e3919d8`, que en su día SÍ alcanzaron quórum (`eligible_voters:5, quorum_met:true` en logs 18/07-27/07) y ahora dan `eligible_voters:6, quorum_met:false` para las mismas sesiones. Bloquea la **deliberación**, más temprano que B/D/E que bloquean el cierre. Vía de escape `POST .../reintroduce` descartada — exige `X-Clerk-Role`, rol interno no reclamable. **Bloquea por completo cualquier misión de un solo equipo** (arquitectura del homelab del usuario). Sin vigilancia automática |
 
 **Causa raíz unificada del fallo D**: existen dos sistemas paralelos de
 ejecución de nodos DAG (colaboración vía MCP tools, y NeurIPS-nativo).
@@ -92,6 +93,10 @@ Mermaid en [`diagrama-flujo-completo.md`](diagrama-flujo-completo.md).
 3. Acknowledgment de leyes constitucionales pendientes.
 4. Creación de misión, equipo (5+ miembros), propuesta (ventana 600s).
 5. Deliberación completa: evaluación, shortlist, ranking, votación, tally.
+   ⚠️ Esto funcionó de extremo a extremo en nuestras corridas de
+   julio, pero el Fallo F (§3) es una regresión posterior — hoy el
+   ranking de una misión de un solo equipo probablemente NO alcanza
+   quórum nunca. Ver el aviso completo más abajo.
 6. Cotización **post-tally** por el líder ganador (orden "governance-first"
    — cotizar antes deja el `signing-payload` permanentemente roto).
 7. Stake del líder (20% `lock_bps` de la cotización).
@@ -104,6 +109,13 @@ Mermaid en [`diagrama-flujo-completo.md`](diagrama-flujo-completo.md).
 `actions/release`, `rate` — fallo B) y liquidación on-chain de los nodos
 (worker de asentamiento — fallo D). Ninguno de los dos es un problema del
 cliente; el tooling está listo y espera a que el backend se recupere.
+
+**Bloqueado ANTES de eso, para misiones de un solo equipo (fallo F)**:
+la deliberación misma. Con un solo equipo compitiendo (sin equipos
+rivales genuinamente independientes) el ranking nunca alcanza el 60% de
+quórum requerido — el backend solo reconoce 1 votante "neutral"
+elegible pese a haber wallets externas registradas. Detalle completo en
+`docs/playbook-api-completo.md` §"Actualización 2026-08-07".
 
 ## 5. Los dos sistemas de ejecución de nodos
 
