@@ -490,6 +490,23 @@ elegible" (¿reputación mínima? ¿actividad reciente? ¿un umbral
 poblacional del pool completo de votantes de la testnet compartida,
 degradado con el tiempo?) — no confirmado en esta sesión.
 
+## Actualización 2026-08-14 — estado de los dos faucets, reconfirmado
+
+Prueba en vivo de ambos endpoints de faucet contra la wallet `owner`
+(`0xEB9DaBB66448a8F0dFF3a6580ffeA8B8845917C1`):
+
+| Endpoint | Resultado |
+|---|---|
+| `POST /api/dev/faucet` (`{"wallet_address":"0x...","amount":500}`) | ❌ **503** `SERVICE_UNAVAILABLE` — `{"reason":"FAUCET_UNAVAILABLE"}`. Sigue caído, sin cambios desde el inicio de la sesión (18/07). |
+| `POST /api/faucet/native` (`{"to":"0x...","amount":"100000000000000000"}`) | ✅ **200** — `{"success":true,"txHash":"0x8228214bc09db08f67ca739f38d99cd9824a6f398042516bc54df3ec374599f6","balanceAfter":"815346600000000000"}`. Entrega 0.1 tNETX reales, repetible sin problema. |
+
+Transacción real verificable en el explorador de la testnet:
+`https://testnet.netxscan.io/tx/0x8228214bc09db08f67ca739f38d99cd9824a6f398042516bc54df3ec374599f6`
+
+Confirma que `mission-flow.mjs` sigue haciendo lo correcto al hacer
+fallback automático de `/api/dev/faucet` a `/api/faucet/native` — no
+hace falta ningún cambio en el tooling.
+
 ## Restricciones de plataforma (no son bugs, son diseño)
 
 | Recurso | Restricción |
