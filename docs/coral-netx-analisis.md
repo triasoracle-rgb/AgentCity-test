@@ -50,6 +50,9 @@ de la UI. Reduce la superficie REST expuesta al cliente.
 `POST /auth/guest-login` recibe `{"device_id": "web_<uuid>"}` (el front lo guarda en
 `localStorage["coral.device_id"]`).
 
+Además de la consola, Coral documenta una **segunda API, para POS físico**, en otro
+host: `api.coral.netx.io` (ver sección 12).
+
 ## 4. Hallazgos de la sesión guest
 
 **Auto-provisión.** `GET /user/guest-wallet` devuelve una wallet de login y dos
@@ -257,14 +260,76 @@ MetaMask; o guest) y `/forget_password` (email + código + nueva contraseña).
   "Not activated": *"After activation you can start connecting payment resources."*
 - Rutas que resultaron ser **stubs** vacíos: `/sdk`, `/docs`, `/connect_resources`.
 
-## 12. Qué no está en el repo (a propósito)
+## 12. API de POS físico (`api.coral.netx.io`)
+
+Documentada **a partir de lo que Coral publica** en su propia página `/add_pos` y de
+los textos del bundle. **No se llamó a la API** (no hay credenciales y, como se ve
+abajo, el host ni siquiera resuelve). Las descripciones son verbatim (Coral las
+sirve en EN y JA).
+
+**Contexto.** Es un host **distinto** del de la consola: la API de POS vive en
+`api.coral.netx.io` (dominio **`netx.io`**), mientras que la consola es
+`coral.netx.world/api/console/v1` (dominio **`netx.world`**). El SDK anunciado es
+`coral-pos · iOS / Android / embedded`. Nota de integración:
+
+> "A physical POS is not bound to a specific environment. Integrate with the APIs
+> below during development. After go-live, the merchant checks the connection on
+> this page."
+
+Es decir, un POS físico **no se ata a un entorno**; en su lugar escanea el *dedicated
+payment code* de cualquier entorno para crear la sesión de cobro.
+
+**Contrato publicado** (base `https://api.coral.netx.io`):
+
+| Método | Ruta | Descripción (verbatim) |
+|---|---|---|
+| POST | `/v1/pos/register` | Register the device with POS ID and secret |
+| POST | `/v1/pos/heartbeat` | Report online status and keep the connection alive |
+| POST | `/v1/pos/sessions` | Scan any environment's dedicated payment code to create a collection session |
+| POST | `/v1/pos/sessions/{id}/confirm` | Confirm the scan result and wait for on-chain completion |
+
+El frontend solo publica **método + ruta + descripción**: no declara esquemas de
+request/response ni cabeceras de auth. Lo que sí se infiere de la UI:
+
+- **Alta.** El formulario "Register Device" tiene **POS Name** (requerido, con
+  `maxLength`), **Vendor** y **Model**, y el botón "Register and Generate Secret".
+  El texto dice que al registrar el dispositivo recibe un **POS ID y un secreto de
+  un solo uso** ("one-time secret"). De ahí el `register` → devuelve `{ POS ID,
+  secret }`, y el resto de llamadas se autentican con ese par.
+- **Ciclo de vida:** `register` (una vez) → `heartbeat` (keepalive periódico) →
+  `sessions` (escanea el código de pago del entorno → sesión de cobro) →
+  `sessions/{id}/confirm` (confirma el escaneo y espera la liquidación on-chain).
+  Mapea 1:1 con la máquina de estados del Virtual POS
+  (`Awaiting scan → Paying → Chain confirming → Completed`).
+
+### El host no está desplegado (verificado)
+
+Resolución DNS pasiva, calibrada contra hosts conocidos (sin llamar a ningún
+endpoint de la API):
+
+| Host | Resuelve |
+|---|---|
+| `coral.netx.world` (consola) | sí → `18.180.50.157` (HTTP 307) |
+| `netx.io` (dominio padre) | sí → `198.145.10.86` |
+| **`api.coral.netx.io`** | **no — NXDOMAIN** |
+| `coral.netx.io` | no — NXDOMAIN |
+
+El DNS del entorno funciona (resuelve la consola, el dominio padre y terceros), pero
+`api.coral.netx.io` **no existe en DNS público**. Sumado a que el formulario de alta
+es un **stub cliente** (genera el POS ID con `crypto.randomUUID()`, sin tocar la red),
+la conclusión es que esta API de POS está **documentada pero no operativa** en la
+edición pública: es un contrato planificado/aspiracional, coherente con que
+`/sdk`, `/docs` y `/connect_resources` sean stubs y con el aviso del propio producto
+("Real authentication and payment APIs are not configured").
+
+## 13. Qué no está en el repo (a propósito)
 
 - JWT de guest, cookies, `device_id` y capturas de red sin redactar.
 - El JavaScript/HTML/CSS descargado de `coral.netx.world` (código de terceros);
   los scripts lo vuelven a obtener en vivo cuando hace falta.
 - La URL del despliegue.
 
-## 13. Pendiente / ideas
+## 14. Pendiente / ideas
 
 - Explorar el flujo de activación (stake de 5000 NETX) — toca dinero real, requiere
   decisión explícita.
