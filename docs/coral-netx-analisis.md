@@ -191,6 +191,7 @@ si no está instalado, de la copia preinstalada del contenedor cloud.
 | `guest-vpos-flow.mjs` | Login guest nativo + sesión en `/pos/virtual`; reporta cuántas peticiones dispara la creación (0) y guarda el tráfico con los JWT redactados. |
 | `probe-modules.mjs` | Enumera el registro webpack en vivo y clasifica los módulos con el vocabulario de la demo. |
 | `build-worker.mjs [html]` | Genera `runs/coral/worker.js` para subir como Worker de módulo. |
+| `crawl-inventory.mjs` | Recorrido acotado (sin login + guest) de la consola; genera `runs/coral/inventory.md` y guarda texto/capturas por página (ver sección 11). |
 
 ```bash
 node scripts/coral/verify-demo.mjs                              # reconstrucción local
@@ -201,14 +202,69 @@ node scripts/coral/probe-modules.mjs
 node scripts/coral/build-worker.mjs
 ```
 
-## 11. Qué no está en el repo (a propósito)
+## 11. Inventario de rutas (crawl anónimo + guest)
+
+Recorrido acotado con `scripts/coral/crawl-inventory.mjs`: mismo origen, 700 ms entre
+páginas, tope de 45/pasada, siguiendo enlaces internos un salto. Dos pasadas — sin
+login y con el modo guest del propio producto. No sondea endpoints ocultos; solo
+visita lo que la sesión guest está autorizada a ver. Texto y capturas por página en
+`runs/coral/crawl/` (ignorado por git).
+
+**Sin login:** todas las rutas de la consola hacen **redirect 307 → `/login`**. Solo
+son públicas `/login`, `/signup` (email + código de verificación + password; o
+MetaMask; o guest) y `/forget_password` (email + código + nueva contraseña).
+
+**Con guest** (18 páginas alcanzables):
+
+| Ruta | Resuelve a | Nota |
+|---|---|---|
+| `/` | — | dashboard (Not activated) |
+| `/login` | `/` | ya autenticado |
+| `/pos`, `/pos/virtual` | — | lista POS / POS virtual (stub de 2 estados) |
+| `/orders` | — | órdenes (vacío) |
+| `/networks` | — | Solana · Polygon · Morph |
+| `/wallets` | — | MetaMask |
+| `/tokens` | — | USDC/USDT/JPYC |
+| `/stablecoins` | `/tokens` | alias |
+| `/environments` | — | lista de entornos (vacía) |
+| `/environments/new` | `/create_environment` | alias |
+| `/create_environment` | — | flujo de alta, **gated** (Not activated) |
+| `/assets` | — | balances on-chain de ejemplo |
+| `/connect_resources` | — | **stub** ("wired into the application shell") |
+| `/add_pos` | — | alta de POS físico + **spec de API** (ver abajo) |
+| `/security` | — | perfil / bind email·wallet |
+| `/sdk`, `/docs` | — | **stubs** |
+
+### Hallazgos nuevos del crawl
+
+- **API de POS físico, en un host distinto.** `/add_pos` documenta una integración
+  con base **`https://api.coral.netx.io`** (≠ la consola `coral.netx.world/api/console/v1`):
+
+  | Método | Ruta | Descripción |
+  |---|---|---|
+  | POST | `/v1/pos/register` | registra el dispositivo con POS ID + secreto |
+  | POST | `/v1/pos/heartbeat` | reporta estado online y mantiene la conexión |
+  | POST | `/v1/pos/sessions` | escanea el código de pago de un entorno y crea sesión de cobro |
+  | POST | `/v1/pos/sessions/{id}/confirm` | confirma el escaneo y espera la liquidación on-chain |
+
+  Un POS físico "no está atado a un entorno concreto"; se integra vía estas APIs en
+  desarrollo y el comercio comprueba la conexión tras el go-live.
+- **`/assets`** ("Asset Management") lista balances on-chain de muestra: USDC 3.0587
+  (Solana), USDT 2.6262 (Solana), USDC 2.939 (Polygon), JPYC 88.2585 (Polygon), con
+  "USD valuation unavailable" (sin tipos de cambio en Community Edition).
+- **`/create_environment`** es el flujo real de alta (View → Activate → Connect →
+  Environment check → Dedicated payment URL → POS payment → View orders), pero muestra
+  "Not activated": *"After activation you can start connecting payment resources."*
+- Rutas que resultaron ser **stubs** vacíos: `/sdk`, `/docs`, `/connect_resources`.
+
+## 12. Qué no está en el repo (a propósito)
 
 - JWT de guest, cookies, `device_id` y capturas de red sin redactar.
 - El JavaScript/HTML/CSS descargado de `coral.netx.world` (código de terceros);
   los scripts lo vuelven a obtener en vivo cuando hace falta.
 - La URL del despliegue.
 
-## 12. Pendiente / ideas
+## 13. Pendiente / ideas
 
 - Explorar el flujo de activación (stake de 5000 NETX) — toca dinero real, requiere
   decisión explícita.
