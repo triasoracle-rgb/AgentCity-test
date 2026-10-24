@@ -8,6 +8,34 @@
 >
 > **Fecha de la investigación: 2026-10-24.**
 
+## Índice
+
+1. [Qué es Coral](#1-qué-es-coral)
+2. [Stack y seguridad observables](#2-stack-y-seguridad-observables)
+3. [Superficie de API](#3-superficie-de-api)
+4. [Hallazgos de la sesión guest](#4-hallazgos-de-la-sesión-guest)
+5. [Virtual POS en vivo: stub de dos estados](#5-virtual-pos-en-vivo-stub-de-dos-estados)
+6. [La "Payment demo" no está desplegada](#6-la-payment-demo-no-está-desplegada)
+7. [Reconstrucción](#7-reconstrucción)
+8. [Despliegue de prueba en Cloudflare](#8-despliegue-de-prueba-en-cloudflare)
+9. [¿Sirve para probar el flujo completo?](#9-sirve-para-probar-el-flujo-completo)
+10. [Scripts](#10-scripts-scriptscoral)
+11. [Inventario de rutas (crawl anónimo + guest)](#11-inventario-de-rutas-crawl-anónimo--guest)
+12. [API de POS físico (`api.coral.netx.io`)](#12-api-de-pos-físico-apicoralnetxio)
+13. [Qué no está en el repo (a propósito)](#13-qué-no-está-en-el-repo-a-propósito)
+14. [Pendiente / ideas](#14-pendiente--ideas)
+15. [Datos de referencia](#15-datos-de-referencia)
+16. [Reproducción rápida](#16-reproducción-rápida)
+17. [Cronología de la investigación](#17-cronología-de-la-investigación)
+
+> **TL;DR.** Coral es la pasarela de cobro en stablecoin del ecosistema NetX. Su
+> edición pública tiene el frontend y la autenticación funcionando, pero el **núcleo
+> de pago no es operativo**: el Virtual POS real es un stub de 2 estados, la "Payment
+> demo" rica no está desplegada, el SDK/docs y la API de POS (`api.coral.netx.io`) son
+> contratos sin backend (el host ni resuelve), y cobrar de verdad está gated tras un
+> stake de **5000 NETX** y/o las ediciones Commercial/Enterprise. Este repo incluye una
+> reconstrucción fiel e interactiva del Virtual POS y los scripts para reproducir todo.
+
 ## 1. Qué es Coral
 
 Consola de **pagos en stablecoin para empresas Web2** ("Connecting Web2 Enterprises
@@ -78,12 +106,35 @@ activation_threshold: 5000.00000000  is_activated: false
 Activar Coral exige **5000 NETX** (saldo NETX + BSC). Hasta entonces
 `coral_activated:false` y el entorno queda "In setup".
 
-**Recursos por defecto** (renderizados server-side para el guest):
+Respuestas exactas (tokens redactados):
+
+```jsonc
+// POST /auth/guest-login  {"device_id":"web_<uuid>"}
+{"code":"0000","message":"Guest account created","data":{
+  "user_id":189,"uid":"210000949","nickname":"Guest_web_e9",
+  "is_guest":true,"token":"<jwt>","expires_at":"...+00:00","is_new_account":true}}
+
+// GET /user/info
+{"code":"0000","data":{"uid":"210000949","nickname":"Guest_web_e9","is_guest":true,
+  "coral_activated":false,"netx_balance":"0.00000000",
+  "environment_count":{"running":0,"configuring":1}}}
+
+// GET /user/netx-balance
+{"code":"0000","data":{"netx_chain_balance":"0.00000000","bsc_chain_balance":"0.00000000",
+  "total_balance":"0.00000000","activation_threshold":"5000.00000000","is_activated":false}}
+
+// GET /user/guest-wallet   (idéntico entre sesiones guest = sandbox compartido)
+{"code":"0000","data":{"wallet_address":"0x928c…F0FD",
+  "evm_payment_address":"0x292A83…1d32d","sol_payment_address":"7VcPhK…BA6zQ"}}
+```
+
+**Recursos por defecto** (renderizados server-side para el guest; detalle completo en
+la sección 15):
 
 | Recurso | Contenido |
 |---|---|
 | Redes | Solana · Polygon (137) · Morph (2818) |
-| Stablecoins | USDC y USDT en Solana; USDC y JPYC en Polygon; USDC en Morph (contratos mainnet reales) |
+| Stablecoins | 6: USDC/USDT en Solana, USDC/JPYC en Polygon, USDC/USDT en Morph (contratos mainnet reales) |
 | Wallets | MetaMask |
 | POS | 1 "Coral Virtual POS" |
 
@@ -336,3 +387,88 @@ edición pública: es un contrato planificado/aspiracional, coherente con que
 - Capa de acceso (Cloudflare Access o token) si el despliegue se va a compartir.
 - Revisar periódicamente si Coral publica la "Payment demo" o el SDK
   (`probe-modules.mjs` lo detectaría).
+- Check de reachability de `api.coral.netx.io` para detectar cuándo lo desplieguen.
+
+## 15. Datos de referencia
+
+### 15.1 Redes de pago por defecto (guest)
+
+| Red | Familia | Chain ID | Explorer |
+|---|---|---|---|
+| Solana | Solana | — | `explorer.solana.com` |
+| Polygon | EVM | 137 | `polygonscan.com` |
+| Morph | EVM | 2818 | `explorer.morph.network` |
+
+### 15.2 Stablecoins por defecto (guest)
+
+| Token | Símbolo | Red | Contrato / Mint | Dec. |
+|---|---|---|---|---|
+| USD Coin | USDC | Solana | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` | 6 |
+| Tether USD | USDT | Solana | `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB` | 6 |
+| USD Coin | USDC | Polygon | `0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359` | 6 |
+| JPY Coin | JPYC | Polygon | `0xE7C3D8C9a439feDe00D2600032D5dB0Be71C3c29` | 18 |
+| USD Coin | USDC | Morph | `0xCfb1186F4e93D60E60a8bDd997427D1F33bc372B` | 6 |
+| Tether USD | USDT | Morph | `0xe7cd86e13AC4309349F30B3435a9d337750fC82D` | 6 |
+
+(Mints de Solana reales de USDC/USDT mainnet; los contratos EVM son los de cada red.)
+
+### 15.3 Referencia de endpoints REST (`/api/console/v1`)
+
+| Método | Ruta | Auth | Cuerpo / notas |
+|---|---|---|---|
+| POST | `/auth/guest-login` | — | `{device_id:"web_<uuid>"}` → crea cuenta guest + JWT |
+| POST | `/auth/login` | — | email + password |
+| POST | `/auth/register` | — | email + código de verificación + password |
+| POST | `/auth/metamask-nonce` | — | `{wallet_address}` → nonce a firmar |
+| POST | `/auth/metamask-login` | — | firma del nonce |
+| POST | `/auth/refresh-token` | cookie | renueva el JWT |
+| POST | `/auth/send-verification-code` | — | envía código por email |
+| POST | `/auth/forgot-password` | — | reset por email + código |
+| POST | `/auth/{bind-email,bind-wallet,unbind-wallet}` | Bearer | vincula/desvincula |
+| POST | `/auth/logout` | Bearer | cierra sesión |
+| GET | `/user/info` | Bearer | perfil + `coral_activated` + `environment_count` |
+| GET | `/user/netx-balance` | Bearer | saldos + `activation_threshold` (5000) |
+| GET | `/user/guest-wallet` | Bearer | wallet custodia + direcciones de cobro |
+| PUT | `/user/{profile,change-email,change-password}` | Bearer | edición de cuenta |
+| POST | `/user/upload-avatar` | Bearer | avatar (1/día) |
+
+Todo lo demás (environments, networks, stablecoins, wallets, POS, orders) va por
+**Server Actions**, no por REST. El JWT va en `Authorization: Bearer <token>`
+(cabecera) o en la cookie `coral.token` (SSR). Respuesta envuelta en
+`{code,message,data}`; `code:"0000"` = OK.
+
+### 15.4 API de POS físico (otro host)
+
+`https://api.coral.netx.io` — `POST /v1/pos/{register, heartbeat, sessions,
+sessions/{id}/confirm}`. Detalle y estado (no desplegada) en la sección 12.
+
+## 16. Reproducción rápida
+
+```bash
+# Desde la raíz del repo. Playwright se resuelve del proyecto o del contenedor cloud.
+npm install                                       # ethers, undici (no imprescindibles para los scripts coral)
+
+node scripts/coral/verify-demo.mjs                # 10 checks sobre la reconstrucción local
+node scripts/coral/verify-demo.mjs coral/vpos-demo-public.html   # versión publicada
+node scripts/coral/guest-vpos-flow.mjs            # login guest + sesión POS (0 peticiones al crear)
+node scripts/coral/probe-modules.mjs              # 267 módulos; demo solo en i18n (13695)
+node scripts/coral/crawl-inventory.mjs            # inventario anon + guest -> runs/coral/inventory.md
+node scripts/coral/build-worker.mjs               # empaqueta el Worker -> runs/coral/worker.js
+```
+
+Las salidas (capturas, inventario, netlog, worker.js) caen en `runs/coral/`, que está
+en `.gitignore`. Los scripts no necesitan credenciales: usan el modo guest público.
+
+## 17. Cronología de la investigación
+
+1. **Análisis estático** del login y los bundles: stack, CSP, superficie de API.
+2. **Login guest** (`Continue as Guest`): wallet custodia + direcciones de cobro,
+   gate de 5000 NETX, recursos por defecto.
+3. **Virtual POS en vivo**: confirmado stub de 2 estados, 0 peticiones al backend.
+4. **Probe de módulos webpack**: la "Payment demo" no está desplegada (solo i18n).
+5. **Reconstrucción** del Virtual POS desde los restos del bundle (QR real no pagable).
+6. **Despliegue** de prueba en Cloudflare (Worker, host no predecible, sin marca).
+7. **Crawl** anon + guest: inventario de rutas; aparecen `/assets`, `/create_environment`,
+   `/add_pos`, stubs.
+8. **API de POS** (`api.coral.netx.io`): documentada desde `/add_pos`; host no resuelve.
+9. **Consolidación**: este documento, los scripts y el `coral/README.md`.
