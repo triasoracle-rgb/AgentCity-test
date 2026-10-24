@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Virtual POS — Reconstruction</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+<style>
+  :root{
+    --coral-primary:#256bff; --coral-primary-dark:#1555de; --coral-primary-soft:#eaf2ff;
+    --coral-bg:#f1f7ff; --coral-surface:#fff; --coral-border:#e3ebf5;
+    --coral-text:#111827; --coral-muted:#8b9ab4;
+    --coral-success:#37bb73; --coral-success-soft:#e7f8ed;
+    --coral-warning:#dc9a2b; --coral-warning-soft:#fff4dd;
+    --coral-danger:#ef5e67; --coral-danger-soft:#fff0f0;
+    --coral-info:#4b80ff; --coral-info-soft:#e9f1ff;
+    --radius:16px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       background:var(--coral-bg);color:var(--coral-text);line-height:1.45}
+  .wrap{max-width:860px;margin:0 auto;padding:24px 16px 64px}
+  .disclaimer{background:#1b2430;color:#eaf0f7;border-radius:12px;padding:14px 16px;font-size:13px;margin-bottom:20px}
+  .disclaimer b{color:#ffd166}
+  .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px;letter-spacing:.3px}
+  .brand .mark{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--coral-primary),#7aa2ff);
+       display:grid;place-items:center;color:#fff;font-weight:900;font-size:15px}
+  .brand .ed{font-size:11px;font-weight:700;color:var(--coral-primary);background:var(--coral-primary-soft);
+       padding:3px 8px;border-radius:999px;letter-spacing:.4px}
+  .lang{display:flex;gap:4px;background:#fff;border:1px solid var(--coral-border);border-radius:999px;padding:3px}
+  .lang button{border:0;background:transparent;padding:5px 12px;border-radius:999px;font-size:13px;cursor:pointer;color:var(--coral-muted);font-weight:600}
+  .lang button.on{background:var(--coral-primary);color:#fff}
+
+  .card{background:var(--coral-surface);border:1px solid var(--coral-border);border-radius:var(--radius);
+        padding:26px;box-shadow:0 18px 40px -28px rgba(37,107,255,.45)}
+  .card-head{display:flex;align-items:center;gap:14px;margin-bottom:6px}
+  .card-head .ic{width:46px;height:46px;border-radius:12px;background:var(--coral-primary-soft);display:grid;place-items:center}
+  .card-head .ic svg{width:24px;height:24px;stroke:var(--coral-primary)}
+  .card-head h2{margin:0;font-size:22px}
+  .card-head p{margin:2px 0 0;color:var(--coral-muted);font-size:14px}
+
+  label.field{display:block;margin-top:22px;font-size:13px;font-weight:700;color:#3a4252}
+  .amount-row{display:flex;gap:10px;margin-top:8px}
+  .amount-row input{flex:1;font-size:16px;padding:12px 14px;border:1px solid var(--coral-border);border-radius:12px;outline:none}
+  .amount-row input:focus{border-color:var(--coral-primary);box-shadow:0 0 0 3px var(--coral-primary-soft)}
+  .amount-row select{font-size:15px;padding:0 14px;border:1px solid var(--coral-border);border-radius:12px;background:#fff;font-weight:600}
+  .primary-button{margin-top:22px;width:100%;border:0;background:var(--coral-primary);color:#fff;font-weight:700;
+       font-size:15px;padding:14px;border-radius:12px;cursor:pointer;transition:background .15s}
+  .primary-button:hover{background:var(--coral-primary-dark)}
+
+  /* session view */
+  .session{text-align:center;padding:10px 0 6px}
+  .badge{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:700;padding:6px 14px;border-radius:999px}
+  .status-success{background:var(--coral-success-soft);color:#31aa66}
+  .status-warning{background:var(--coral-warning-soft);color:#c68c22}
+  .status-info{background:var(--coral-info-soft);color:var(--coral-primary)}
+  .status-danger{background:var(--coral-danger-soft);color:#dd4d58}
+  .status-muted{background:#f0f3f7;color:#8491a2}
+  .dot{width:9px;height:9px;border-radius:50%;background:currentColor;display:inline-block}
+  .spin{animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .qr{width:184px;height:184px;margin:18px auto;border-radius:14px;padding:12px;background:#fff;border:1px solid var(--coral-border);
+      display:grid;grid-template-columns:repeat(21,1fr);grid-template-rows:repeat(21,1fr);gap:0;overflow:hidden}
+  .qr.spent,.qrbox.spent{filter:grayscale(1);opacity:.25}
+  .qr i{background:var(--coral-text)}
+  .qr i.on{background:var(--coral-text)}
+  .qr i.off{background:transparent}
+  .qrbox{width:184px;height:184px;margin:18px auto;border-radius:14px;padding:12px;background:#fff;
+      border:1px solid var(--coral-border);display:block}
+  .qrbox svg{width:100%;height:100%;display:block;shape-rendering:crispEdges}
+  .qr-cap{font-size:11px;color:var(--coral-muted);margin-top:-6px}
+  .checkmark{width:120px;height:120px;margin:12px auto}
+  .checkmark circle{fill:none;stroke:var(--coral-success);stroke-width:4}
+  .checkmark path{fill:none;stroke:var(--coral-success);stroke-width:6;stroke-linecap:round;stroke-linejoin:round}
+  .sess-id{font-size:13px;color:var(--coral-muted);margin-top:14px;font-weight:600;letter-spacing:.4px}
+  .sess-amt{font-size:13px;color:var(--coral-muted);margin-top:4px}
+  .flow{display:flex;justify-content:center;gap:0;margin:22px 0 6px;flex-wrap:wrap}
+  .step{display:flex;align-items:center;font-size:12px;color:var(--coral-muted);font-weight:600}
+  .step .pip{width:22px;height:22px;border-radius:50%;border:2px solid var(--coral-border);display:grid;place-items:center;
+       font-size:11px;margin:0 6px;background:#fff}
+  .step.done .pip{background:var(--coral-success);border-color:var(--coral-success);color:#fff}
+  .step.active .pip{background:var(--coral-primary);border-color:var(--coral-primary);color:#fff}
+  .step.active{color:var(--coral-text)}
+  .step .bar{width:26px;height:2px;background:var(--coral-border)}
+  .fixtures{margin-top:18px;background:#f7faff;border:1px dashed var(--coral-border);border-radius:12px;padding:14px;text-align:left}
+  .fixtures div{font-size:12px;color:#55607a;margin:3px 0;word-break:break-all}
+  .fixtures .k{color:var(--coral-muted);font-weight:700}
+  .warn{color:#dd4d58;font-size:12px;font-weight:700;margin-top:10px;text-align:center}
+  .controls{display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;justify-content:center}
+  .controls button{border:1px solid var(--coral-border);background:#fff;color:var(--coral-text);font-weight:700;
+       font-size:13px;padding:11px 16px;border-radius:12px;cursor:pointer}
+  .controls button.adv{background:var(--coral-primary);color:#fff;border-color:var(--coral-primary)}
+  .controls button.decl{color:#dd4d58;border-color:var(--coral-danger-soft)}
+  .controls button:disabled{opacity:.4;cursor:not-allowed}
+
+  details.prov{margin-top:26px;background:#fff;border:1px solid var(--coral-border);border-radius:12px;padding:4px 16px}
+  details.prov summary{cursor:pointer;font-weight:700;font-size:14px;padding:12px 0;color:#3a4252}
+  details.prov table{width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:14px}
+  details.prov td{padding:7px 8px;border-top:1px solid var(--coral-border);vertical-align:top}
+  details.prov td:first-child{color:var(--coral-muted);font-weight:700;white-space:nowrap;width:1%}
+  code{background:#eef3fb;padding:1px 5px;border-radius:5px;font-size:12px;color:#1d2a3a}
+  .disclaimer code{background:rgba(255,255,255,.12);color:#cfe0ff}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="disclaimer" id="disc">
+    <b>⚠ RECONSTRUCTION — not the live product.</b>
+    This is a faithful rebuild of the <b>“Payment demo”</b> state machine whose strings and status enum still ship in the
+    public <code>coral.netx.world</code> JavaScript bundle but whose React component is <b>not routed and not present</b> in the
+    deployed app (verified by enumerating all 267 live webpack modules — only orphaned i18n strings remain). Every label,
+    status, colour and fixture below is copied verbatim from that bundle. <b>No backend, no network calls, no transactions.</b>
+    The live <code>/pos/virtual</code> screen is only a 2-state stub (form → “Awaiting customer scan” → End session).
+  </div>
+
+  <div class="topbar">
+    <div class="brand">
+      <span class="mark">N</span> NetX <span class="ed">Reconstruction</span>
+    </div>
+    <div class="lang">
+      <button data-l="en" class="on" onclick="setLang('en')">English</button>
+      <button data-l="ja" onclick="setLang('ja')">日本語</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12a7 7 0 0 1 14 0"/><path d="M8.5 12a3.5 3.5 0 0 1 7 0"/><circle cx="12" cy="12" r="1"/></svg></div>
+      <div>
+        <h2 id="t-title">Virtual POS</h2>
+        <p id="t-demopay">Payment demo</p>
+      </div>
+    </div>
+
+    <!-- FORM -->
+    <div id="form-view">
+      <label class="field" id="t-amount">Payment amount</label>
+      <div class="amount-row">
+        <input id="amount" type="number" min="0.01" step="0.01" placeholder="0.00" value="12.50">
+        <select id="currency" aria-label="Currency">
+          <option>USD</option><option selected>USDC</option><option>USDT</option>
+        </select>
+        <select id="network" aria-label="Network">
+          <option value="evm" selected>EVM</option><option value="sol">Solana</option>
+        </select>
+      </div>
+      <button class="primary-button" id="t-create" onclick="createSession()">Create payment session</button>
+      <p class="warn" id="t-hint" style="margin-top:16px">This is a state-machine demonstration, not a transaction. Never send funds to this page.</p>
+    </div>
+
+    <!-- SESSION -->
+    <div id="session-view" class="session" style="display:none">
+      <div id="badge" class="badge status-warning"><span class="dot"></span><span id="badge-text">Awaiting customer scan</span></div>
+
+      <div id="visual"></div>
+
+      <div class="flow" id="flow"></div>
+
+      <div class="sess-id">Session <span id="sess-id">VPS-00000000</span></div>
+      <div class="sess-amt"><span id="t-amt-label">Amount</span>: <span id="sess-amt">12.50</span> <span id="sess-cur">USDC</span> · <span id="t-testmode">Test mode</span></div>
+
+      <div class="fixtures">
+        <div><span class="k" id="t-recv">Receiving address</span> (<span id="recv-net">EVM</span>): <span id="recv-addr">—</span></div>
+        <div><span class="k" id="t-custodial">Guest custodial wallet:</span> 0x928c0026Cf9105035E6982fDF7f799eda821F0FD</div>
+        <div><span class="k">Demo payment URL:</span> https://pay.example.invalid/environment/demo-env-001</div>
+      </div>
+      <p class="warn" id="t-hint2">TEST MODE — real Coral <b>guest sandbox</b> addresses (shared by all guests). The QR is informational only, not a payable wallet URI. Never send funds.</p>
+
+      <div class="controls">
+        <button class="adv" id="t-advance" onclick="advance()">Simulate next step</button>
+        <button class="decl" id="t-decline" onclick="decline()">Simulate wallet rejection</button>
+        <button id="t-restart" onclick="reset()">Reset demo</button>
+        <button id="t-end" onclick="endSession()">End session</button>
+      </div>
+    </div>
+  </div>
+
+  <details class="prov">
+    <summary>Provenance — where every value comes from (public bundle)</summary>
+    <table>
+      <tr><td>Status enum + labels</td><td><code>PENDING_PAYMENT · PAYING · CHAIN_CONFIRMING · COMPLETED · FAILED · EXPIRED</code> — from the Orders i18n block & status map (EN/JA both shipped)</td></tr>
+      <tr><td>Status colours</td><td><code>.status-success/warning/info/danger/muted</code> — copied from <code>/_next/static/css/5f598774b7830906.css</code></td></tr>
+      <tr><td>Demo controls</td><td><code>advance:"Simulate next step" · decline:"Simulate wallet rejection" · restart:"Reset demo"</code> — <code>virtualPos</code> i18n, module 13695 (strings only, no component)</td></tr>
+      <tr><td>Hint text</td><td><code>"This is a state-machine demonstration, not a transaction. Never send funds to this page."</code> — verbatim</td></tr>
+      <tr><td>Fixtures</td><td><code>pay.example.invalid/environment/demo-env-001</code> demo URL — from <code>page-128</code> demo data</td></tr>
+      <tr><td>Real addresses (test mode)</td><td>EVM <code>0x292A83…1d32d</code>, SOL <code>7VcPhK…BA6zQ</code>, custodial <code>0x928c00…1F0FD</code> — captured live from <code>GET /api/console/v1/user/guest-wallet</code> on 2026-10-24. <b>Identical across independent guest sessions → shared platform sandbox addresses</b>, not per-user wallets. QR encodes them only inside an informational <code>https</code> URL, never a payable <code>ethereum:</code>/<code>solana:</code> URI.</td></tr>
+      <tr><td>Session id format</td><td><code>"VPS-"+crypto.randomUUID().slice(0,8).toUpperCase()</code> — exact generator from the live <code>/pos/virtual</code> stub</td></tr>
+      <tr><td>Brand palette</td><td><code>--coral-primary #256bff</code> etc. — CSS custom properties from the live stylesheet</td></tr>
+      <tr><td>Transition order</td><td><b>Reconstructed</b> from the label semantics (no ordering array survived in the bundle): Awaiting scan → Paying → Chain confirming → Completed; rejection → Failed; timeout → Expired</td></tr>
+    </table>
+  </details>
+</div>
+
+<script>
+const I18N = {
+  en:{title:"Virtual POS",demoPay:"Payment demo",amount:"Payment amount",create:"Create payment session",
+      hint:"This is a state-machine demonstration, not a transaction. Never send funds to this page.",
+      hint2:"TEST MODE — real Coral guest sandbox addresses (shared by all guests). The QR is informational only, not a payable wallet URI. Never send funds.",
+      advance:"Simulate next step",decline:"Simulate wallet rejection",restart:"Reset demo",end:"End session",
+      amtLabel:"Amount",testMode:"Test mode",
+      st:{PENDING_PAYMENT:"Awaiting customer scan",PAYING:"Paying",CHAIN_CONFIRMING:"Chain confirming",
+          COMPLETED:"Completed",FAILED:"Failed",EXPIRED:"Expired"},
+      flow:["Scan","Pay","Confirm","Done"]},
+  ja:{title:"仮想POS",demoPay:"決済デモ",amount:"決済金額",create:"決済セッションを作成",
+      hint:"状態遷移のデモです。実際の取引ではありません。送金しないでください。",
+      hint2:"テストモード — Coral ゲストのサンドボックス実アドレス（全ゲスト共有）。QR は情報表示のみで、送金可能な URI ではありません。送金しないでください。",
+      advance:"次の状態をシミュレーション",decline:"ウォレット拒否をシミュレーション",restart:"デモをリセット",end:"セッションを終了",
+      amtLabel:"金額",testMode:"テストモード",
+      st:{PENDING_PAYMENT:"顧客の読み取りを待機中",PAYING:"支払処理中",CHAIN_CONFIRMING:"チェーン確認中",
+          COMPLETED:"完了",FAILED:"失敗",EXPIRED:"期限切れ"},
+      flow:["読取","支払","確認","完了"]}
+};
+const CLASS = {PENDING_PAYMENT:"status-warning",PAYING:"status-info",CHAIN_CONFIRMING:"status-info",
+               COMPLETED:"status-success",FAILED:"status-danger",EXPIRED:"status-muted"};
+const ORDER = ["PENDING_PAYMENT","PAYING","CHAIN_CONFIRMING","COMPLETED"];
+
+let lang="en", state=null, idx=0, expiryTimer=null;
+
+function setLang(l){
+  lang=l;
+  document.documentElement.lang=l;
+  document.querySelectorAll('.lang button').forEach(b=>b.classList.toggle('on',b.dataset.l===l));
+  const t=I18N[l];
+  document.getElementById('t-title').textContent=t.title;
+  document.getElementById('t-demopay').textContent=t.demoPay;
+  document.getElementById('t-amount').textContent=t.amount;
+  document.getElementById('t-create').textContent=t.create;
+  document.getElementById('t-hint').textContent=t.hint;
+  document.getElementById('t-hint2').textContent=t.hint2;
+  document.getElementById('t-advance').textContent=t.advance;
+  document.getElementById('t-decline').textContent=t.decline;
+  document.getElementById('t-restart').textContent=t.restart;
+  document.getElementById('t-end').textContent=t.end;
+  document.getElementById('t-amt-label').textContent=t.amtLabel;
+  document.getElementById('t-testmode').textContent=t.testMode;
+  if(state) render();
+}
+
+const DEMO_URL="https://pay.example.invalid/environment/demo-env-001";
+// Real Coral guest receiving addresses, captured live from the guest API (GET /user/guest-wallet)
+// on 2026-10-24. Verified IDENTICAL across independent guest sessions => shared platform
+// sandbox addresses, not per-user custodial wallets. Shown for fidelity; QR stays informational.
+const REAL = {
+  evm:"0x292A83a4363062916815EBbe2eF137d7B791d32d",
+  sol:"7VcPhKXedtnce6iWGGvbGLkoEaSMTN4yyUcrGQuBA6zQ",
+  custodial:"0x928c0026Cf9105035E6982fDF7f799eda821F0FD",
+  captured:"2026-10-24"
+};
+const recvAddr = (fam)=> fam==="sol" ? REAL.sol : REAL.evm;
+
+// Informational (NON-payable) QR: a plain https URL that carries the session + real target as
+// query params. Deliberately NOT an EIP-681 `ethereum:`/Solana-Pay `solana:` URI, so a wallet
+// scanning it cannot pre-fill a real transfer to the sandbox address.
+function qrVisual(spent){
+  const fam = state?state.net:"evm";
+  const data = DEMO_URL
+    + "?session=" + (state?state.id:"")
+    + "&mode=test&network=" + fam
+    + "&token=" + (state?state.cur:"")
+    + "&amount=" + (state?state.amt:"")
+    + "&to=" + recvAddr(fam);
+  if (window.qrcode){
+    try{
+      const q=qrcode(0,"M"); q.addData(data); q.make();
+      const svg=q.createSvgTag({cellSize:6,margin:0,scalable:true});
+      return '<div class="qrbox'+(spent?' spent':'')+'">'+svg+'</div>';
+    }catch(e){/* fall through */}
+  }
+  return '<div class="qr'+(spent?' spent':'')+'">'+qrGrid(state.id)+'</div>';
+}
+// deterministic pseudo-QR (offline fallback only)
+function qrGrid(seed){
+  let h=0; for(const c of seed) h=(h*31+c.charCodeAt(0))>>>0;
+  let cells=''; let x=h||1;
+  const finder=(r,c)=> (r<7&&c<7)||(r<7&&c>13)||(r>13&&c<7);
+  for(let r=0;r<21;r++)for(let c=0;c<21;c++){
+    x=(x*1103515245+12345)>>>0;
+    let on;
+    if(finder(r,c)){
+      const rr=r%7, cc=(c>13?c-14:c)%7;
+      on=(rr===0||rr===6||cc===0||cc===6||(rr>1&&rr<5&&cc>1&&cc<5));
+    } else on=(x>>7&1)===1;
+    cells+='<i class="'+(on?'on':'off')+'"></i>';
+  }
+  return cells;
+}
+
+function createSession(){
+  const amt=document.getElementById('amount').value||'0.00';
+  const cur=document.getElementById('currency').value;
+  const net=document.getElementById('network').value;
+  const id='VPS-'+(crypto.randomUUID().slice(0,8).toUpperCase());
+  state={id,amt,cur,net,status:'PENDING_PAYMENT'}; idx=0;
+  document.getElementById('form-view').style.display='none';
+  document.getElementById('session-view').style.display='block';
+  document.getElementById('sess-id').textContent=id;
+  document.getElementById('sess-amt').textContent=amt;
+  document.getElementById('sess-cur').textContent=cur;
+  armExpiry();
+  render();
+}
+
+function armExpiry(){
+  clearTimeout(expiryTimer);
+  // generous: only expires if left untouched on the scan screen
+  expiryTimer=setTimeout(()=>{ if(state&&state.status==='PENDING_PAYMENT'){ state.status='EXPIRED'; render(); } }, 45000);
+}
+
+function advance(){
+  if(!state) return;
+  if(['COMPLETED','FAILED','EXPIRED'].includes(state.status)) return;
+  idx=Math.min(idx+1,ORDER.length-1);
+  state.status=ORDER[idx];
+  if(state.status!=='PENDING_PAYMENT') clearTimeout(expiryTimer);
+  render();
+}
+function decline(){
+  if(!state) return;
+  if(['COMPLETED','FAILED','EXPIRED'].includes(state.status)) return;
+  clearTimeout(expiryTimer);
+  state.status='FAILED'; render();
+}
+function reset(){ clearTimeout(expiryTimer); if(state){ state.status='PENDING_PAYMENT'; idx=0; armExpiry(); render(); } }
+function endSession(){ clearTimeout(expiryTimer); state=null; idx=0;
+  document.getElementById('session-view').style.display='none';
+  document.getElementById('form-view').style.display='block';
+}
+
+function render(){
+  const t=I18N[lang], s=state.status;
+  // real receiving address, by selected network family
+  document.getElementById('recv-net').textContent = state.net==='sol' ? 'Solana' : 'EVM';
+  document.getElementById('recv-addr').textContent = recvAddr(state.net);
+  const badge=document.getElementById('badge');
+  badge.className='badge '+CLASS[s];
+  const terminalDone = s==='COMPLETED';
+  const spinning = (s==='PENDING_PAYMENT'||s==='PAYING'||s==='CHAIN_CONFIRMING');
+  document.getElementById('badge').innerHTML =
+    (spinning?'<span class="dot spin" style="border:2px solid currentColor;border-right-color:transparent;background:transparent;width:12px;height:12px"></span>'
+             :'<span class="dot"></span>')+'<span>'+t.st[s]+'</span>';
+
+  // visual
+  const v=document.getElementById('visual');
+  if(s==='COMPLETED'){
+    v.innerHTML='<svg class="checkmark" viewBox="0 0 120 120"><circle cx="60" cy="60" r="54"/><path d="M38 62 L54 78 L84 44"/></svg>';
+  } else if(s==='FAILED'||s==='EXPIRED'){
+    v.innerHTML=qrVisual(true);
+  } else {
+    v.innerHTML=qrVisual(s!=='PENDING_PAYMENT')+'<div class="qr-cap">'+DEMO_URL+'</div>';
+  }
+
+  // flow pips
+  const curIdx = s==='FAILED'||s==='EXPIRED' ? idx : ORDER.indexOf(s);
+  const flow=document.getElementById('flow');
+  flow.innerHTML = t.flow.map((lbl,i)=>{
+    const cls = i<curIdx?'done':(i===curIdx && s!=='FAILED' && s!=='EXPIRED'?'active':'');
+    const pip = i<curIdx?'✓':(i+1);
+    return '<div class="step '+cls+'"><span class="pip">'+pip+'</span>'+lbl+'</div>'+
+           (i<t.flow.length-1?'<span class="bar"></span>':'');
+  }).join('');
+
+  // controls
+  const over=['COMPLETED','FAILED','EXPIRED'].includes(s);
+  document.getElementById('t-advance').disabled=over;
+  document.getElementById('t-decline').disabled=over;
+}
+setLang('en');
+</script>
+</body>
+</html>
